@@ -76,6 +76,40 @@ Entre como administrador e abra **Utilizadores**. Acrescente os e-mails autoriza
 
 Retirar uma pessoa tem efeito imediato.
 
+## Login principal: «Iniciar sessão com Microsoft» (Entra ID)
+
+A app faz o login Microsoft sozinha (OpenID Connect com PKCE). Pede **apenas** `openid profile email`: não acede ao calendário nem ao e-mail. A sessão fica num cookie assinado (`HttpOnly`, `Secure`) e o segredo da aplicação só existe no Cloudflare.
+
+### 1. Registar a aplicação (Entra ID, pela TI ou por quem tiver permissão)
+1. https://entra.microsoft.com → **Identity → Applications → App registrations → New registration**.
+2. Nome «FERCOPOR Reuniões». **Supported account types:** *Accounts in this organizational directory only* (single tenant).
+3. **Redirect URI:** plataforma **Web**, endereço `https://reunioes.fercopor.workers.dev/auth/retorno`. Se a app passar para um subdomínio próprio, acrescentar também esse endereço.
+4. Depois de criar, copiar:
+   - **Application (client) ID** → `ENTRA_CLIENT_ID`;
+   - **Directory (tenant) ID** → `ENTRA_TENANT_ID`.
+5. **Certificates & secrets → New client secret** (validade de 12 ou 24 meses; anotar a data de renovação) → copiar o **Value** → `ENTRA_CLIENT_SECRET`.
+6. **API permissions:** deixar só `Microsoft Graph → openid, profile, email` (delegadas). Se estiver lá o `User.Read`, pode ficar; não é usado.
+7. Opcional, recomendado: **Grant admin consent for FERCOPOR**, para ninguém ver o ecrã de consentimento.
+
+### 2. Variáveis no Worker (Settings → Variables and Secrets)
+| Nome | Tipo | Valor |
+|---|---|---|
+| `ENTRA_TENANT_ID` | Text | Directory (tenant) ID |
+| `ENTRA_CLIENT_ID` | Text | Application (client) ID |
+| `ENTRA_CLIENT_SECRET` | **Secret** | o Value do client secret |
+| `SESSION_SECRET` | **Secret** | texto aleatório com 40 ou mais caracteres (gerador de palavras-passe) |
+| `APP_URL` | Text | `https://reunioes.fercopor.workers.dev` |
+
+**Deploy.** O login atual (Cloudflare Access) continua a funcionar enquanto existir. Ninguém perde o acesso.
+
+### 3. Migração sem interrupção
+1. Com o Access ainda ativo, abra `https://reunioes.fercopor.workers.dev/auth/entrar` e entre com a Microsoft. Confirme que a app abre com o seu nome. Peça o mesmo a um coordenador.
+2. Quando estiver tudo bem: Zero Trust → Access → Applications → **apagar ou desativar** a aplicação de `reunioes.fercopor.workers.dev` (ou desligar o Access em Domains & Routes).
+3. No Worker, crie `AUTH_MODE` = `entra` (Text) e faça Deploy. A partir daqui só a sessão Microsoft é aceite.
+4. Pode apagar `ACCESS_TEAM_DOMAIN` e `ACCESS_AUD`.
+
+Os utilizadores autorizados e a ligação ao HubSpot (e-mail → proprietário) não mudam.
+
 ## Mais tarde, só com autorização: ligar ao HubSpot
 
 1. **Leitura:** Private App «FERCOPOR Reuniões» com âmbitos de leitura de contactos, de proprietários, do esquema de negócios (opções de «Empreendimento») e de reuniões.

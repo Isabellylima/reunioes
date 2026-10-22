@@ -239,6 +239,16 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 .tabela th, .tabela td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--linha); font-size: 14px; }
 .caixa-tabela { overflow-x: auto; }
 
+/* ---------- Sessão ---------- */
+.sair { color: var(--creme); font-size: 14px; font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; padding: 0 6px; }
+.sair:hover { color: #FFFFFF; }
+.pagina-entrada { padding-bottom: 0; }
+.entrada { max-width: 440px; margin: 48px auto; padding: 32px 24px; background: var(--superficie); border: 1px solid var(--linha); border-radius: var(--raio); display: flex; flex-direction: column; gap: 16px; text-align: center; }
+.entrada h1 { font-size: 24px; font-weight: 800; }
+.entrada p { margin: 0; }
+.botao-microsoft { min-height: 52px; gap: 12px; background: var(--superficie); border: 1px solid #8C8C8C; color: #5E5E5E; font-weight: 600; }
+.botao-microsoft:hover { background: #F3F3F3; color: #5E5E5E; }
+
 /* ---------- Mensagens ---------- */
 .mensagem {
   position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); z-index: 20; max-width: calc(100% - 32px);

@@ -41,6 +41,10 @@
       body: opcoes.body ? JSON.stringify(opcoes.body) : undefined,
       credentials: 'same-origin',
     });
+    if (r.status === 401) {
+      window.location.href = '/';   // sessão expirada: o servidor mostra «Iniciar sessão com Microsoft»
+      throw new Error('Sessão expirada. A redirecionar…');
+    }
     let dados = {};
     try { dados = await r.json(); } catch { /* resposta sem JSON */ }
     if (!r.ok) throw new Error(dados.erro || `Erro ${r.status}`);
@@ -615,6 +619,8 @@
       estado.eu = await api('/api/me');
       document.querySelector('[data-avatar]').textContent = iniciais(estado.eu.nome);
       document.querySelectorAll('[data-so-admin]').forEach((el) => { el.hidden = !estado.eu.admin; });
+      const sair = document.querySelector('[data-sair]');
+      if (estado.eu.sair && estado.eu.autenticacao !== 'demo') { sair.href = estado.eu.sair; sair.hidden = false; }
       const aviso = document.querySelector('[data-aviso]');
       if (estado.eu.modo === 'demo') { aviso.textContent = 'Modo de demonstração: dados fictícios, nada é gravado no HubSpot.'; aviso.hidden = false; }
       else if (!estado.eu.escritaAtiva) { aviso.textContent = 'Só leitura: a escrita no HubSpot ainda não está autorizada.'; aviso.hidden = false; }

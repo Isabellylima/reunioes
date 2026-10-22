@@ -2,8 +2,10 @@
    FERCOPOR Reuniões — servidor (Cloudflare Pages, modo avançado _worker.js)
 
    O que faz:
-   1. Exige sessão Microsoft 365 através do Cloudflare Access e valida o token
-      (JWT) no servidor: assinatura, audiência, emissor, validade e domínio.
+   1. Login «Iniciar sessão com Microsoft» (Entra ID, OpenID Connect + PKCE):
+      valida o id_token (assinatura, emissor, audiência, organização, nonce,
+      validade) e cria uma sessão num cookie assinado (HttpOnly, Secure).
+      Durante a transição aceita também o Cloudflare Access (AUTH_MODE ≠ "entra").
    2. Só deixa entrar utilizadores autorizados (lista em KV + ADMIN_EMAILS),
       cada um ligado a um proprietário ATIVO do HubSpot.
    3. Cada utilizador só lê e altera as SUAS reuniões (verificado aqui, em cada
@@ -16,8 +18,15 @@
      hubspot  com HUBSPOT_TOKEN: dados reais (escrita só com HUBSPOT_WRITE_ENABLED)
 
    Variáveis (Settings › Variables and Secrets):
-     ACCESS_TEAM_DOMAIN     ex.: fercopor.cloudflareaccess.com          (Text)
-     ACCESS_AUD             "Application Audience (AUD) Tag" do Access   (Text)
+     ENTRA_TENANT_ID        ID do diretório (tenant) Microsoft 365 da FERCOPOR (GUID)  (Text)
+     ENTRA_CLIENT_ID        ID da aplicação registada no Entra ID       (Text)
+     ENTRA_CLIENT_SECRET    segredo do cliente da aplicação              (Secret)
+     SESSION_SECRET         texto aleatório com 32+ caracteres (assina as sessões) (Secret)
+     APP_URL                ex.: https://reunioes.fercopor.workers.dev   (Text)
+     AUTH_MODE              "entra" desliga o Cloudflare Access no fim da transição (Text, opcional)
+     SESSAO_HORAS           duração da sessão, 1–24 (por omissão 12)     (Text, opcional)
+     ACCESS_TEAM_DOMAIN     ex.: fercopor.cloudflareaccess.com          (Text, transição)
+     ACCESS_AUD             "Application Audience (AUD) Tag" do Access   (Text, transição)
      ADMIN_EMAILS           e-mails com acesso de administração, separados por vírgulas (Text)
      HUBSPOT_TOKEN          token da Private App do HubSpot              (Secret, opcional)
      HUBSPOT_WRITE_ENABLED  "true" para permitir escrever no HubSpot      (Text, opcional)
@@ -82,7 +91,29 @@ async function tratar(request, env) {
   const url = new URL(request.url);
   const caminho = url.pathname;
 
-  const utilizador = await autenticar(request, env);   // nada é entregue sem sessão válida
+  // Rotas públicas: login Microsoft e os dois ficheiros da página de entrada (sem dados)
+  if (request.method === 'GET') {
+    if (caminho === '/auth/entrar' && entraConfigurada(env)) return iniciarLoginMicrosoft(request, env);
+    if (caminho === '/auth/retorno' && entraConfigurada(env)) return concluirLoginMicrosoft(request, env);
+    if (caminho === '/auth/sair') return terminarSessao(env);
+    if (caminho === '/style.css' || caminho === '/assets/fercopor-logo.svg') return env.ASSETS.fetch(request);
+  }
+
+  let utilizador;
+  try {
+    utilizador = await autenticar(request, env);   // nada mais é entregue sem sessão válida
+  } catch (e) {
+    // Sem sessão e com login Microsoft configurado: páginas mostram «Iniciar sessão com Microsoft»; a API responde 401
+    if (e instanceof ErroHttp && e.status === 401 && !caminho.startsWith('/api/') && entraConfigurada(env)) {
+      return paginaEntrada(env, '');
+    }
+    if (e instanceof ErroHttp && e.status === 403 && !caminho.startsWith('/api/') && entraConfigurada(env)) {
+      const h = new Headers();
+      h.append('Set-Cookie', cookie(COOKIE_SESSAO, '', 0));
+      return paginaEntrada(env, e.message, 403, h);
+    }
+    throw e;
+  }
 
   if (!caminho.startsWith('/api/')) {
     return env.ASSETS.fetch(request);
@@ -97,7 +128,8 @@ async function tratar(request, env) {
   const m = request.method;
 
   if (m === 'GET' && caminho === '/api/me') {
-    return json({ ...utilizador, modo: fonte.modo, escritaAtiva: fonte.escritaAtiva });
+    const sair = utilizador.autenticacao === 'access' ? '/cdn-cgi/access/logout' : '/auth/sair';
+    return json({ ...utilizador, modo: fonte.modo, escritaAtiva: fonte.escritaAtiva, sair });
   }
   if (m === 'GET' && caminho === '/api/empreendimentos') {
     return json({ empreendimentos: await fonte.empreendimentos() });
@@ -140,20 +172,53 @@ async function tratar(request, env) {
 }
 
 /* ---------- Autenticação e autorização ---------- */
+/*
+   Ordem: (1) sessão Microsoft (cookie assinado, criado após login Entra ID / OIDC);
+          (2) Cloudflare Access (JWT), só enquanto AUTH_MODE ≠ "entra" (transição);
+          (3) modo demo sem Access nem Entra (DEMO_USER_EMAIL, só dados fictícios).
+   O login pede apenas "openid profile email". O acesso ao calendário (Graph) será um
+   consentimento SEPARADO e posterior, com tokens guardados à parte (ver SPEC §O).
+*/
+
+const COOKIE_SESSAO = '__Host-reunioes_sessao';
+const COOKIE_OAUTH = '__Host-reunioes_oauth';
+const AMBITOS_LOGIN = 'openid profile email';
+
+function entraConfigurada(env) {
+  const nomes = ['ENTRA_TENANT_ID', 'ENTRA_CLIENT_ID', 'ENTRA_CLIENT_SECRET', 'SESSION_SECRET', 'APP_URL'];
+  const definidas = nomes.filter((n) => env[n]);
+  if (definidas.length === 0) return false;
+  const emFalta = nomes.filter((n) => !env[n]);
+  if (emFalta.length) throw new ErroHttp(503, `Configuração Microsoft incompleta: falta ${emFalta.join(', ')}.`);
+  if (String(env.SESSION_SECRET).length < 32) throw new ErroHttp(503, 'SESSION_SECRET tem de ter 32 ou mais caracteres.');
+  if (!/^[0-9a-f-]{36}$/i.test(env.ENTRA_TENANT_ID)) throw new ErroHttp(503, 'ENTRA_TENANT_ID tem de ser o ID do diretório (GUID).');
+  return true;
+}
 
 async function autenticar(request, env) {
   const dominio = (env.ALLOWED_DOMAIN || 'fercopor.pt').toLowerCase();
+  const entra = entraConfigurada(env);
+  const access = Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) && env.AUTH_MODE !== 'entra';
   let email;
+  let autenticacao;
 
-  if (env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) {
-    const token = request.headers.get('Cf-Access-Jwt-Assertion');
-    if (!token) throw new ErroHttp(401, 'Sessão em falta. Entre com a conta Microsoft 365.');
-    const dados = await verificarJwtAccess(token, env);
+  const sessao = entra ? await lerCookieAssinado(request, env, COOKIE_SESSAO) : null;
+  if (sessao) {
+    email = String(sessao.e || '').toLowerCase();
+    autenticacao = 'microsoft';
+  } else if (access && request.headers.get('Cf-Access-Jwt-Assertion')) {
+    const dados = await verificarJwtAccess(request.headers.get('Cf-Access-Jwt-Assertion'), env);
     email = String(dados.email || '').toLowerCase();
+    autenticacao = 'access';
+  } else if (entra) {
+    throw new ErroHttp(401, 'Sessão em falta. Inicie sessão com a conta Microsoft.');
+  } else if (access) {
+    throw new ErroHttp(401, 'Sessão em falta. Entre com a conta da empresa.');
   } else if (!env.HUBSPOT_TOKEN && env.DEMO_USER_EMAIL) {
-    email = String(env.DEMO_USER_EMAIL).toLowerCase();   // pré-visualização sem Access, só com dados fictícios
+    email = String(env.DEMO_USER_EMAIL).toLowerCase();   // pré-visualização sem login, só com dados fictícios
+    autenticacao = 'demo';
   } else {
-    throw new ErroHttp(503, 'Configuração em falta: defina ACCESS_TEAM_DOMAIN e ACCESS_AUD no Cloudflare.');
+    throw new ErroHttp(503, 'Configuração em falta: defina o login Microsoft (ENTRA_*) ou o Cloudflare Access (ACCESS_*).');
   }
 
   if (!email.endsWith('@' + dominio)) throw new ErroHttp(403, 'Conta fora da organização.');
@@ -167,7 +232,7 @@ async function autenticar(request, env) {
   const proprietario = await proprietarioComCache(env, email);
   if (!proprietario) throw new ErroHttp(403, 'Sem utilizador ativo correspondente no HubSpot.');
 
-  return { email, nome: proprietario.nome, ownerId: String(proprietario.id), admin };
+  return { email, nome: proprietario.nome, ownerId: String(proprietario.id), admin, autenticacao };
 }
 
 // Proprietário HubSpot por e-mail, guardado 5 minutos em memória (um utilizador desativado deixa de entrar em ≤ 5 min)
@@ -182,37 +247,239 @@ async function proprietarioComCache(env, email) {
   return valor;
 }
 
-let certificadosCache = { dominio: '', chaves: null, ate: 0 };
+/* --- Login Microsoft (Entra ID, OpenID Connect, fluxo de código com PKCE) --- */
+
+async function iniciarLoginMicrosoft(request, env) {
+  const url = new URL(request.url);
+  const volta = destinoSeguro(url.searchParams.get('volta'));
+  const estado = aleatorio(24);
+  const nonce = aleatorio(24);
+  const verificador = aleatorio(48);
+  const desafio = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verificador))));
+  const temporario = await assinar(env, { s: estado, n: nonce, v: verificador, volta, exp: agoraSeg() + 600 });
+
+  const autorizar = new URL(`https://login.microsoftonline.com/${env.ENTRA_TENANT_ID}/oauth2/v2.0/authorize`);
+  autorizar.search = new URLSearchParams({
+    client_id: env.ENTRA_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: enderecoRetorno(env),
+    response_mode: 'query',
+    scope: AMBITOS_LOGIN,
+    state: estado,
+    nonce,
+    code_challenge: desafio,
+    code_challenge_method: 'S256',
+    prompt: 'select_account',
+  }).toString();
+
+  return new Response(null, {
+    status: 302,
+    headers: { Location: autorizar.toString(), 'Set-Cookie': cookie(COOKIE_OAUTH, temporario, 600), 'Cache-Control': 'no-store' },
+  });
+}
+
+async function concluirLoginMicrosoft(request, env) {
+  const url = new URL(request.url);
+  const temporario = await lerCookieAssinado(request, env, COOKIE_OAUTH);
+  const limpar = cookie(COOKIE_OAUTH, '', 0);
+  if (url.searchParams.get('error')) {
+    return paginaEntrada(env, 'O início de sessão foi cancelado ou recusado pela Microsoft.', 400, limpar);
+  }
+  const codigo = url.searchParams.get('code');
+  if (!temporario || !codigo || url.searchParams.get('state') !== temporario.s) {
+    return paginaEntrada(env, 'O pedido de início de sessão expirou ou é inválido. Tente novamente.', 400, limpar);
+  }
+
+  const r = await fetch(`https://login.microsoftonline.com/${env.ENTRA_TENANT_ID}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: env.ENTRA_CLIENT_ID,
+      client_secret: env.ENTRA_CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code: codigo,
+      redirect_uri: enderecoRetorno(env),
+      code_verifier: temporario.v,
+      scope: AMBITOS_LOGIN,
+    }).toString(),
+  });
+  if (!r.ok) {
+    console.error('Entra token', r.status, (await r.text()).slice(0, 300));
+    return paginaEntrada(env, 'A Microsoft não confirmou o início de sessão. Tente novamente.', 502, limpar);
+  }
+  const resposta = await r.json();
+  let dados;
+  try {
+    dados = await verificarIdTokenEntra(resposta.id_token, env, temporario.n);
+  } catch (e) {
+    if (!(e instanceof ErroHttp)) throw e;
+    return paginaEntrada(env, e.message, e.status, limpar);
+  }
+
+  const email = String(dados.email || dados.preferred_username || '').toLowerCase();
+  const dominio = (env.ALLOWED_DOMAIN || 'fercopor.pt').toLowerCase();
+  if (!email.endsWith('@' + dominio)) {
+    return paginaEntrada(env, 'Esta conta não pertence à organização FERCOPOR.', 403, limpar);
+  }
+  const horas = Math.min(Math.max(Number(env.SESSAO_HORAS) || 12, 1), 24);
+  const sessao = await assinar(env, { e: email, o: dados.oid || '', exp: agoraSeg() + horas * 3600 });
+  const cabecalhos = new Headers({ Location: temporario.volta || '/', 'Cache-Control': 'no-store' });
+  cabecalhos.append('Set-Cookie', cookie(COOKIE_SESSAO, sessao, horas * 3600));
+  cabecalhos.append('Set-Cookie', limpar);
+  return new Response(null, { status: 302, headers: cabecalhos });
+}
+
+function terminarSessao(env) {
+  const cabecalhos = new Headers({ 'Cache-Control': 'no-store' });
+  cabecalhos.append('Set-Cookie', cookie(COOKIE_SESSAO, '', 0));
+  cabecalhos.append('Set-Cookie', cookie(COOKIE_OAUTH, '', 0));
+  return paginaEntrada(env, 'Sessão terminada.', 200, cabecalhos);
+}
+
+async function verificarIdTokenEntra(token, env, nonceEsperado) {
+  const tenant = String(env.ENTRA_TENANT_ID).toLowerCase();
+  const dados = await verificarJwtRs256(token, `https://login.microsoftonline.com/${tenant}/discovery/v2.0/keys`);
+  if (dados.iss !== `https://login.microsoftonline.com/${tenant}/v2.0`) throw new ErroHttp(401, 'Sessão Microsoft de outro emissor.');
+  if (dados.aud !== env.ENTRA_CLIENT_ID) throw new ErroHttp(401, 'Sessão Microsoft para outra aplicação.');
+  if (String(dados.tid || '').toLowerCase() !== tenant) throw new ErroHttp(403, 'Conta de outra organização.');
+  if (!nonceEsperado || dados.nonce !== nonceEsperado) throw new ErroHttp(401, 'Sessão Microsoft inválida.');
+  return dados;
+}
+
+function enderecoRetorno(env) {
+  return String(env.APP_URL).replace(/\/$/, '') + '/auth/retorno';
+}
+
+function destinoSeguro(v) {
+  return typeof v === 'string' && /^\/[^/\\]/.test(v) && v.length < 200 ? v : '/';
+}
+
+function paginaEntrada(env, mensagem, status = 200, cabecalhosExtra) {
+  const cabecalhos = new Headers(cabecalhosExtra instanceof Headers ? cabecalhosExtra : {});
+  if (typeof cabecalhosExtra === 'string') cabecalhos.append('Set-Cookie', cabecalhosExtra);
+  cabecalhos.set('Content-Type', 'text/html; charset=utf-8');
+  cabecalhos.set('Cache-Control', 'no-store');
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const html = `<!doctype html>
+<html lang="pt-PT"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>Entrar · Reuniões FERCOPOR</title><link rel="stylesheet" href="/style.css"></head>
+<body class="pagina-entrada">
+<header class="topo"><span class="marca"><img src="/assets/fercopor-logo.svg" alt="FERCOPOR" width="128" height="20"><span>Reuniões</span></span></header>
+<main class="entrada">
+  <h1>Reuniões FERCOPOR</h1>
+  <p>Entre com a sua conta Microsoft 365 da FERCOPOR.</p>
+  ${mensagem ? `<p class="nota" role="status">${esc(mensagem)}</p>` : ''}
+  <a class="botao botao-microsoft" href="/auth/entrar">
+    <svg viewBox="0 0 21 21" width="20" height="20" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#F25022"/><rect x="11" y="1" width="9" height="9" fill="#7FBA00"/><rect x="1" y="11" width="9" height="9" fill="#00A4EF"/><rect x="11" y="11" width="9" height="9" fill="#FFB900"/></svg>
+    Iniciar sessão com Microsoft
+  </a>
+  <p class="subtitulo">Só utilizadores autorizados. Não é pedida nenhuma palavra-passe a esta aplicação.</p>
+</main>
+</body></html>`;
+  return new Response(html, { status, headers: cabecalhos });
+}
+
+/* --- Cloudflare Access (login atual, mantido durante a transição) --- */
 
 async function verificarJwtAccess(token, env) {
-  const partes = token.split('.');
+  const dominio = env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const dados = await verificarJwtRs256(token, `https://${dominio}/cdn-cgi/access/certs`);
+  const audiencias = Array.isArray(dados.aud) ? dados.aud : [dados.aud];
+  if (!audiencias.includes(env.ACCESS_AUD)) throw new ErroHttp(401, 'Sessão inválida.');
+  if (dados.iss !== `https://${dominio}`) throw new ErroHttp(401, 'Sessão inválida.');
+  return dados;
+}
+
+/* --- JWT RS256 genérico (Access e Entra ID) --- */
+
+const chavesCache = new Map();   // url → { chaves, ate }
+
+async function verificarJwtRs256(token, urlChaves) {
+  const partes = String(token || '').split('.');
   if (partes.length !== 3) throw new ErroHttp(401, 'Sessão inválida.');
-  const cabecalho = JSON.parse(textoBase64Url(partes[0]));
-  const dados = JSON.parse(textoBase64Url(partes[1]));
+  let cabecalho;
+  let dados;
+  try {
+    cabecalho = JSON.parse(textoBase64Url(partes[0]));
+    dados = JSON.parse(textoBase64Url(partes[1]));
+  } catch { throw new ErroHttp(401, 'Sessão inválida.'); }
   if (cabecalho.alg !== 'RS256') throw new ErroHttp(401, 'Sessão inválida.');
 
-  const dominio = env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  if (certificadosCache.dominio !== dominio || Date.now() > certificadosCache.ate) {
-    const r = await fetch(`https://${dominio}/cdn-cgi/access/certs`);
+  let guardado = chavesCache.get(urlChaves);
+  if (!guardado || Date.now() > guardado.ate || !guardado.chaves.some((k) => k.kid === cabecalho.kid)) {
+    const r = await fetch(urlChaves);
     if (!r.ok) throw new ErroHttp(503, 'Não foi possível validar a sessão.');
-    certificadosCache = { dominio, chaves: (await r.json()).keys || [], ate: Date.now() + 36e5 };
+    guardado = { chaves: (await r.json()).keys || [], ate: Date.now() + 36e5 };
+    chavesCache.set(urlChaves, guardado);
   }
-  const jwk = certificadosCache.chaves.find((k) => k.kid === cabecalho.kid);
+  const jwk = guardado.chaves.find((k) => k.kid === cabecalho.kid);
   if (!jwk) throw new ErroHttp(401, 'Sessão inválida.');
 
-  const chave = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  const chave = await crypto.subtle.importKey('jwk', { kty: jwk.kty, n: jwk.n, e: jwk.e }, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
   const valido = await crypto.subtle.verify(
     'RSASSA-PKCS1-v1_5', chave, bytesBase64Url(partes[2]), new TextEncoder().encode(partes[0] + '.' + partes[1]),
   );
   if (!valido) throw new ErroHttp(401, 'Sessão inválida.');
 
-  const agora = Math.floor(Date.now() / 1000);
-  const audiencias = Array.isArray(dados.aud) ? dados.aud : [dados.aud];
-  if (!audiencias.includes(env.ACCESS_AUD)) throw new ErroHttp(401, 'Sessão inválida.');
-  if (dados.iss !== `https://${dominio}`) throw new ErroHttp(401, 'Sessão inválida.');
+  const agora = agoraSeg();
   if (!dados.exp || dados.exp < agora) throw new ErroHttp(401, 'Sessão expirada. Volte a entrar.');
   if (dados.nbf && dados.nbf > agora + 60) throw new ErroHttp(401, 'Sessão inválida.');
   return dados;
+}
+
+/* --- Cookies assinados (HMAC-SHA256 com SESSION_SECRET) --- */
+
+async function chaveHmac(env) {
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function assinar(env, dados) {
+  const corpo = base64Url(new TextEncoder().encode(JSON.stringify(dados)));
+  const assinatura = await crypto.subtle.sign('HMAC', await chaveHmac(env), new TextEncoder().encode(corpo));
+  return `${corpo}.${base64Url(new Uint8Array(assinatura))}`;
+}
+
+async function lerCookieAssinado(request, env, nome) {
+  const valor = lerCookie(request, nome);
+  if (!valor) return null;
+  const [corpo, assinatura] = valor.split('.');
+  if (!corpo || !assinatura) return null;
+  let valido = false;
+  try {
+    valido = await crypto.subtle.verify('HMAC', await chaveHmac(env), bytesBase64Url(assinatura), new TextEncoder().encode(corpo));
+  } catch { return null; }
+  if (!valido) return null;
+  try {
+    const dados = JSON.parse(textoBase64Url(corpo));
+    return dados.exp && dados.exp > agoraSeg() ? dados : null;
+  } catch { return null; }
+}
+
+function lerCookie(request, nome) {
+  const todos = request.headers.get('Cookie') || '';
+  for (const parte of todos.split(';')) {
+    const i = parte.indexOf('=');
+    if (i > 0 && parte.slice(0, i).trim() === nome) return parte.slice(i + 1).trim();
+  }
+  return null;
+}
+
+function cookie(nome, valor, segundos) {
+  return `${nome}=${valor}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${segundos}`;
+}
+
+function aleatorio(bytes) {
+  return base64Url(crypto.getRandomValues(new Uint8Array(bytes)));
+}
+
+function base64Url(bytes) {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function agoraSeg() {
+  return Math.floor(Date.now() / 1000);
 }
 
 async function lerAutorizados(env) {

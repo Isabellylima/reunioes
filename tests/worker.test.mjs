@@ -237,3 +237,162 @@ test('pedido de outra origem é recusado', async () => {
   const r = await pedir(envDemo(), '/api/reunioes', { method: 'POST', body: {}, headers: { Origin: 'https://malicioso.exemplo' } });
   assert.equal(r.status, 403);
 });
+
+/* ---------- Login Microsoft (Entra ID, OIDC + PKCE) com diretório simulado ---------- */
+
+const TENANT = '11111111-2222-3333-4444-555555555555';
+const CLIENTE = 'app-cliente-teste';
+const URL_APP = 'https://app.exemplo';
+
+const envEntra = (extra = {}) => ({
+  ENTRA_TENANT_ID: TENANT, ENTRA_CLIENT_ID: CLIENTE, ENTRA_CLIENT_SECRET: 'segredo-do-cliente',
+  SESSION_SECRET: 's'.repeat(40), APP_URL: URL_APP,
+  REUNIOES_KV: kvMemoria({ utilizadores: JSON.stringify([{ email: 'ana.teste@fercopor.pt' }]) }),
+  ASSETS: { fetch: async () => new Response('estático') },
+  ...extra,
+});
+
+async function idTokenEntra(dados) {
+  return jwt({ iss: `https://login.microsoftonline.com/${TENANT}/v2.0`, aud: CLIENTE, tid: TENANT, oid: 'oid-ana', name: 'Ana Teste', preferred_username: 'ana.teste@fercopor.pt', ...dados });
+}
+
+// Simula a Microsoft: chaves públicas e endpoint de token (devolve um id_token com o nonce pedido)
+let nonceAtual = null;
+function comMicrosoftFalsa(fn) {
+  return async () => {
+    const pedidosToken = [];
+    let extraToken = {};
+    const original = globalThis.fetch;
+    globalThis.fetch = async (url, op = {}) => {
+      const u = String(url);
+      if (u === `https://login.microsoftonline.com/${TENANT}/discovery/v2.0/keys`) return new Response(JSON.stringify({ keys: [jwkPublica] }));
+      if (u === `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`) {
+        pedidosToken.push(new URLSearchParams(op.body));
+        return new Response(JSON.stringify({ id_token: await idTokenEntra({ nonce: nonceAtual, ...extraToken }) }));
+      }
+      return new Response('{}', { status: 404 });
+    };
+    try { await fn({ pedidosToken, definir: (x) => { extraToken = x; } }); } finally { globalThis.fetch = original; }
+  };
+}
+
+const cookiesDe = (r) => r.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
+
+async function iniciar(env) {
+  const r = await pedir(env, '/auth/entrar');
+  assert.equal(r.status, 302);
+  const destino = new URL(r.headers.get('Location'));
+  nonceAtual = destino.searchParams.get('nonce');
+  return { destino, cookieOauth: cookiesDe(r) };
+}
+
+const retorno = (env, destino, cookieOauth) => pedir(env, `/auth/retorno?code=codigo-1&state=${destino.searchParams.get('state')}`, { headers: { Cookie: cookieOauth } });
+
+test('Entra: sem sessão, as páginas mostram «Iniciar sessão com Microsoft» e a API responde 401', async () => {
+  const env = envEntra();
+  const pagina = await pedir(env, '/');
+  assert.equal(pagina.status, 200);
+  assert.match(await pagina.text(), /Iniciar sessão com Microsoft/);
+  assert.equal((await pedir(env, '/api/me')).status, 401);
+  assert.equal((await pedir(env, '/style.css')).status, 200);   // a página de entrada precisa do estilo
+  assert.match(await (await pedir(env, '/app.js')).text(), /Iniciar sessão/);   // o código da app não é entregue
+});
+
+test('Entra: /auth/entrar usa PKCE (S256), state, nonce e só os âmbitos de login', async () => {
+  const { destino, cookieOauth } = await iniciar(envEntra());
+  assert.equal(destino.origin + destino.pathname, `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/authorize`);
+  assert.equal(destino.searchParams.get('client_id'), CLIENTE);
+  assert.equal(destino.searchParams.get('redirect_uri'), `${URL_APP}/auth/retorno`);
+  assert.equal(destino.searchParams.get('scope'), 'openid profile email');
+  assert.equal(destino.searchParams.get('code_challenge_method'), 'S256');
+  assert.ok(destino.searchParams.get('code_challenge').length >= 43);
+  assert.ok(destino.searchParams.get('state'));
+  assert.match(cookieOauth, /^__Host-reunioes_oauth=/);
+});
+
+test('Entra: login completo cria sessão HttpOnly/Secure e a app reconhece o utilizador', comMicrosoftFalsa(async ({ pedidosToken }) => {
+  const env = envEntra();
+  const { destino, cookieOauth } = await iniciar(env);
+  const r = await retorno(env, destino, cookieOauth);
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('Location'), '/');
+  const sessao = r.headers.getSetCookie().find((c) => c.startsWith('__Host-reunioes_sessao='));
+  assert.match(sessao, /HttpOnly/);
+  assert.match(sessao, /Secure/);
+  assert.match(sessao, /SameSite=Lax/);
+  assert.equal(pedidosToken.length, 1);
+  assert.ok(pedidosToken[0].get('code_verifier'));
+  assert.equal(pedidosToken[0].get('client_secret'), 'segredo-do-cliente');
+  const me = await pedir(env, '/api/me', { headers: { Cookie: cookiesDe(r) } });
+  assert.equal(me.status, 200);
+  const dados = await me.json();
+  assert.equal(dados.email, 'ana.teste@fercopor.pt');
+  assert.equal(dados.autenticacao, 'microsoft');
+  assert.equal(dados.sair, '/auth/sair');
+}));
+
+test('Entra: state errado ou sem cookie temporário → recusado, sem pedir token', comMicrosoftFalsa(async ({ pedidosToken }) => {
+  const env = envEntra();
+  const { cookieOauth } = await iniciar(env);
+  assert.equal((await pedir(env, '/auth/retorno?code=c&state=outro', { headers: { Cookie: cookieOauth } })).status, 400);
+  assert.equal((await pedir(env, '/auth/retorno?code=c&state=x')).status, 400);
+  assert.equal(pedidosToken.length, 0);
+}));
+
+test('Entra: conta de outra organização (tid) ou de outro domínio → recusada sem sessão', comMicrosoftFalsa(async ({ definir }) => {
+  const env = envEntra();
+  definir({ tid: '99999999-9999-9999-9999-999999999999' });
+  let { destino, cookieOauth } = await iniciar(env);
+  let r = await retorno(env, destino, cookieOauth);
+  assert.equal(r.status, 403);
+  assert.ok(!r.headers.getSetCookie().some((c) => c.startsWith('__Host-reunioes_sessao=')));
+  definir({ preferred_username: 'ana@gmail.com' });
+  ({ destino, cookieOauth } = await iniciar(env));
+  r = await retorno(env, destino, cookieOauth);
+  assert.equal(r.status, 403);
+}));
+
+test('Entra: nonce diferente (reutilização de token) → recusado', comMicrosoftFalsa(async ({ definir }) => {
+  const env = envEntra();
+  definir({ nonce: 'nonce-antigo' });
+  const { destino, cookieOauth } = await iniciar(env);
+  assert.equal((await retorno(env, destino, cookieOauth)).status, 401);
+}));
+
+test('Entra: cookie de sessão forjado → sem sessão', async () => {
+  const corpo = Buffer.from(JSON.stringify({ e: 'ana.teste@fercopor.pt', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url');
+  const r = await pedir(envEntra(), '/api/me', { headers: { Cookie: `__Host-reunioes_sessao=${corpo}.assinaturafalsa` } });
+  assert.equal(r.status, 401);
+});
+
+test('Entra: da organização mas não autorizado → mensagem e sessão apagada', comMicrosoftFalsa(async ({ definir }) => {
+  const env = envEntra();
+  definir({ preferred_username: 'carlos.teste@fercopor.pt' });
+  const { destino, cookieOauth } = await iniciar(env);
+  const r = await retorno(env, destino, cookieOauth);
+  assert.equal(r.status, 302);
+  const pagina = await pedir(env, '/', { headers: { Cookie: cookiesDe(r) } });
+  assert.equal(pagina.status, 403);
+  assert.match(await pagina.text(), /sem autorização/);
+  assert.ok(pagina.headers.getSetCookie().some((c) => c.startsWith('__Host-reunioes_sessao=;')));
+}));
+
+test('Entra: /auth/sair apaga a sessão', async () => {
+  const r = await pedir(envEntra(), '/auth/sair');
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.getSetCookie().some((c) => c.startsWith('__Host-reunioes_sessao=;') && c.includes('Max-Age=0')));
+});
+
+test('Transição: com Entra e Access, o Access continua a funcionar; com AUTH_MODE=entra deixa de ser aceite', comHubSpotFalso(async () => {
+  const base = { ...envEntra(), ACCESS_TEAM_DOMAIN: EQUIPA, ACCESS_AUD: AUD };
+  const h = { 'Cf-Access-Jwt-Assertion': await jwt({ email: 'ana.teste@fercopor.pt' }) };
+  const r1 = await pedir(base, '/api/me', { headers: h });
+  assert.equal(r1.status, 200);
+  assert.equal((await r1.json()).autenticacao, 'access');
+  assert.equal((await pedir({ ...base, AUTH_MODE: 'entra' }, '/api/me', { headers: h })).status, 401);
+}));
+
+test('Entra: configuração incompleta → 503 (nunca abre sem login)', async () => {
+  const r = await pedir({ ENTRA_TENANT_ID: TENANT, ASSETS: { fetch: async () => new Response('x') } }, '/');
+  assert.equal(r.status, 503);
+});
