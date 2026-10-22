@@ -19,6 +19,7 @@ const env = {
   REUNIOES_KV: {
     async get(k, t) { const v = kv.get(k); return v == null ? null : (t === 'json' ? JSON.parse(v) : v); },
     async put(k, v) { kv.set(k, v); },
+    async delete(k) { kv.delete(k); },
   },
   ASSETS: {
     async fetch(pedido) {

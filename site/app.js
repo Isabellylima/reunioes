@@ -69,9 +69,10 @@
   function cartao(m) {
     const pendente = m.fim < Date.now() && (!m.resultado || m.resultado === 'SCHEDULED');
     const meta = [m.tipo || 'Sem tipo', MODALIDADES[m.modalidade]].filter(Boolean).join(' · ');
+    const duplicado = m.possivelDuplicado ? '<span class="chip r-VAZIO">Possível duplicado (sincronização Outlook)</span>' : '';
     return `<a class="cartao" href="#/reuniao/${esc(m.id)}">
       <div class="horas"><strong>${esc(hora(m.inicio))}</strong><span>${esc(hora(m.fim))}</span></div>
-      <div class="corpo"><span class="titulo">${esc(m.titulo)}</span><span class="meta">${esc(meta)}</span>${pendente ? chip('') : chip(m.resultado)}</div>
+      <div class="corpo"><span class="titulo">${esc(m.titulo)}</span><span class="meta">${esc(meta)}</span>${pendente ? chip('') : chip(m.resultado)}${duplicado}</div>
     </a>`;
   }
 
@@ -128,8 +129,26 @@
         <div class="cabecalho-seccao"><h2 id="t-hoje">Hoje</h2><a href="#/semana">Ver semana</a></div>
         ${doDia.length ? doDia.map(cartao).join('') : '<p class="vazio">Sem reuniões hoje.</p>'}
       </section>
+      ${blocoCalendario()}
       ${pendentes.length ? `<a class="faixa-ambar" href="#/por-classificar"><span><strong>${pendentes.length} ${pendentes.length === 1 ? 'reunião' : 'reuniões'} por classificar</strong>Já passaram e ainda não têm resultado</span><span aria-hidden="true">›</span></a>` : ''}
     `;
+  }
+
+  const calendario = () => (estado.eu && estado.eu.calendario) || { modo: 'desligado', ligado: false };
+  const calendarioPronto = () => calendario().modo !== 'desligado' && calendario().ligado;
+
+  function blocoCalendario() {
+    const c = calendario();
+    if (c.modo === 'desligado') return '';
+    const simulacao = c.modo === 'simulacao' ? ' <strong>(modo de simulação: nada é criado no Outlook)</strong>' : '';
+    if (!c.ligado) {
+      return `<section class="detalhe"><h2 class="cab-calendario">Calendário Outlook</h2>
+        <p class="subtitulo">Ligue o seu calendário para ver conflitos de horário e criar os eventos Outlook/Teams.${simulacao}</p>
+        <a class="botao botao-microsoft" href="/auth/calendario/ligar">Ligar o meu calendário Outlook</a></section>`;
+    }
+    return `<section class="detalhe"><h2 class="cab-calendario">Calendário Outlook ligado</h2>
+      <p class="subtitulo">A app consulta a sua disponibilidade e cria os eventos que pedir.${simulacao}</p>
+      <button type="button" class="botao-texto" data-acao="desligar-calendario">Desligar o calendário</button></section>`;
   }
 
   /* ---------- Ecrã: semana ---------- */
@@ -212,6 +231,7 @@
       empreendimento: '', tipo: 'Reunião Comercial', tipoManual: false, modalidade: 'presencial',
       data: dataInput(amanha), inicio: '10:00', fim: '11:00', local: '', ligacao: '',
       tipologia: '', orcamento: '', observacoes: '', titulo: '', tituloManual: false, mais: false, aEnviar: false, feito: null,
+      outlook: calendarioPronto(), convidar: {}, disponibilidade: null, resultadoOutlook: null,
     };
   }
 
@@ -250,7 +270,8 @@
       const m = f.feito;
       return `<div class="detalhe">
           <h1>Reunião registada no HubSpot</h1>
-          <div class="linhas"><span>${esc(m.titulo)}</span><span>${esc(maiuscula(diaLongo(m.inicio)))} · ${esc(hora(m.inicio))}–${esc(hora(m.fim))}</span><span>Resultado: Programados</span></div>
+          <div class="linhas"><span>${esc(m.titulo)}</span><span>${esc(maiuscula(diaLongo(m.inicio)))} · ${esc(hora(m.inicio))}–${esc(hora(m.fim))}</span><span>Resultado: Programados</span>
+          ${textoOutlook(f.resultadoOutlook)}</div>
         </div>
         <a class="botao botao-principal botao-grande" href="#/inicio">Voltar ao início</a>
         <button type="button" class="botao" data-acao="agendar-outra">Agendar outra</button>`;
@@ -294,6 +315,15 @@
           <label class="campo">Início<input type="time" data-campo="inicio" value="${esc(f.inicio)}" step="300" required></label>
           <label class="campo">Fim<input type="time" data-campo="fim" value="${esc(f.fim)}" step="300" required></label>
         </div>
+        ${textoDisponibilidade(f.disponibilidade)}
+
+        ${calendario().modo !== 'desligado' ? `<fieldset><legend>Outlook / Teams</legend>
+          ${calendario().ligado
+            ? `<label class="caixa-check"><input type="checkbox" data-campo="outlook" ${f.outlook ? 'checked' : ''}> Criar evento no meu calendário Outlook${f.modalidade === 'online' ? ' com reunião Teams' : ''}</label>
+               ${f.outlook ? `${[f.principal, f.comCliente ? f.cliente : null].filter(Boolean).map((c) => `<label class="caixa-check"><input type="checkbox" data-convidar="${esc(c.id)}" ${f.convidar[c.id] ? 'checked' : ''} ${c.email ? '' : 'disabled'}> Enviar convite a ${esc(c.nome)}${c.email ? ` (${esc(c.email)})` : ' — sem e-mail'}</label>`).join('')}
+               <p class="subtitulo">Só os contactos marcados recebem convite do Outlook.${calendario().modo === 'simulacao' ? ' Modo de simulação: nenhum convite é enviado.' : ''}</p>` : ''}`
+            : '<p class="subtitulo">Ligue o seu calendário na página inicial para criar o evento Outlook.</p>'}
+        </fieldset>` : ''}
 
         <button type="button" class="botao" data-acao="mais" aria-expanded="${f.mais}">${f.mais ? '−' : '+'} Mais detalhes (tipologia, orçamento, notas)</button>
         ${f.mais ? `<div class="grelha-2">
@@ -310,6 +340,39 @@
 
         <div class="rodape-fixo"><button type="submit" class="botao botao-principal botao-grande" ${desativado || f.aEnviar ? 'disabled' : ''}>${f.aEnviar ? 'A registar…' : 'Confirmar agendamento'}</button></div>
       </form>`;
+  }
+
+  function textoOutlook(o) {
+    if (!o || o.estado === 'nao_pedido' || o.estado === 'desligado') return '';
+    if (o.estado === 'falhou') return `<span class="nota">Outlook: não foi possível criar o evento (${esc(o.erro || 'erro')}). A reunião está no HubSpot; pode tentar de novo no detalhe da reunião.</span>`;
+    const ligacao = o.ligacao ? ` · <a href="${esc(o.ligacao)}" target="_blank" rel="noopener noreferrer">ligação Teams</a>` : '';
+    return `<span>Outlook: ${o.estado === 'simulado' ? 'evento simulado (nada foi criado no Outlook)' : 'evento criado no seu calendário'}${ligacao}</span>`;
+  }
+
+  function textoDisponibilidade(d) {
+    if (!d) return '';
+    if (d.erro) return `<p class="nota">Disponibilidade: ${esc(d.erro)}</p>`;
+    if (d.modo === 'desligado') return '';
+    const sim = d.modo === 'simulacao' ? ' (simulação)' : '';
+    if (!d.conflito) return `<p class="subtitulo">Disponibilidade${sim}: livre neste horário.</p>`;
+    const choque = d.ocupados.filter((o) => o.inicio < d.fim && o.fim > d.inicio).map((o) => `${hora(o.inicio)}–${hora(o.fim)}`).join(', ');
+    return `<p class="nota" role="alert">Conflito de horário${sim}: já tem um compromisso ocupado (${esc(choque)}). Pode marcar na mesma, se quiser.</p>`;
+  }
+
+  let temporizadorDisponibilidade;
+  function verificarDisponibilidade() {
+    const f = formulario;
+    if (!f || !calendarioPronto() || !f.data || !f.inicio || !f.fim) return;
+    clearTimeout(temporizadorDisponibilidade);
+    temporizadorDisponibilidade = setTimeout(async () => {
+      const inicio = paraIso(f.data, f.inicio), fim = paraIso(f.data, f.fim);
+      if (Date.parse(fim) <= Date.parse(inicio)) return;
+      try {
+        const d = await api(`/api/calendario/disponibilidade?inicio=${encodeURIComponent(inicio)}&fim=${encodeURIComponent(fim)}`);
+        f.disponibilidade = { ...d, inicio: Date.parse(inicio), fim: Date.parse(fim) };
+      } catch (e) { f.disponibilidade = { erro: e.message }; }
+      desenhar();
+    }, 400);
   }
 
   let temporizadorPesquisa;
@@ -345,10 +408,13 @@
         local: f.modalidade === 'online' ? '' : f.local, ligacao: f.modalidade === 'online' ? f.ligacao : '',
         tipologia: f.tipologia, orcamento: f.orcamento, observacoes: f.observacoes,
         titulo: f.tituloManual ? f.titulo : '',
+        outlook: Boolean(f.outlook && calendarioPronto()),
+        convidar: Object.keys(f.convidar).filter((id) => f.convidar[id]),
       };
-      const { reuniao } = await api('/api/reunioes', { method: 'POST', body: corpo, headers: { 'Idempotency-Key': f.chave } });
+      const { reuniao, outlook } = await api('/api/reunioes', { method: 'POST', body: corpo, headers: { 'Idempotency-Key': f.chave } });
       f.feito = reuniao;
-      mensagem('Reunião registada no HubSpot.');
+      f.resultadoOutlook = outlook;
+      mensagem(outlook && outlook.estado === 'falhou' ? 'Reunião registada no HubSpot; o evento Outlook falhou.' : 'Reunião registada no HubSpot.', outlook && outlook.estado === 'falhou');
       atualizarContadorPendentes();
     } catch (e) {
       mensagem(e.message, true);   // a mesma chave é reutilizada numa nova tentativa: não duplica
@@ -362,9 +428,13 @@
 
   async function ecraReuniao(id) {
     if (!detalhe || detalhe.id !== id) {
-      const { reuniao } = await api(`/api/reunioes/${encodeURIComponent(id)}`);
-      detalhe = { id, reuniao, escolhido: FINAIS.includes(reuniao.resultado) ? reuniao.resultado : '', observacao: '', reprogramar: false };
+      const { reuniao, outlook } = await api(`/api/reunioes/${encodeURIComponent(id)}`);
+      detalhe = { id, reuniao, outlook, escolhido: FINAIS.includes(reuniao.resultado) ? reuniao.resultado : '', observacao: '', reprogramar: false };
     }
+    const o = detalhe.outlook || { estado: 'sem_evento' };
+    const linhaOutlook = calendario().modo === 'desligado' ? '' : (o.estado === 'sem_evento' || o.estado === 'falhou'
+      ? `<span>Outlook: ${o.estado === 'falhou' ? 'o evento não foi criado' : 'sem evento'}${calendarioPronto() && podeEscrever() ? ' · <button type="button" class="botao-texto" data-acao="outlook-de-novo">Criar evento Outlook</button>' : ''}</span>`
+      : textoOutlook(o));
     const m = detalhe.reuniao;
     const contactos = m.contactos.length ? m.contactos.map((c) => `${c.nome} (${c.papel === 'parceiro' ? 'parceiro' : 'cliente'})`).join(' · ') : 'Sem contactos associados';
     const desativado = !podeEscrever();
@@ -379,6 +449,7 @@
           ${m.ligacao ? `<span><a href="${esc(m.ligacao)}" target="_blank" rel="noopener noreferrer">Abrir ligação da reunião</a></span>` : ''}
           <span>${esc(contactos)}</span>
           <span>Resultado atual: ${chip(m.resultado)}</span>
+          ${linhaOutlook}
         </div>
         <button type="button" class="botao-texto" data-acao="abrir-reprogramar" aria-expanded="${detalhe.reprogramar}" ${desativado ? 'disabled' : ''}>Alterar data ou hora</button>
         ${detalhe.reprogramar ? `<form class="formulario" data-formulario="reprogramar">
@@ -387,7 +458,7 @@
               <label class="campo">Início<input type="time" name="inicio" value="${esc(horaInput(m.inicio))}" step="300" required></label>
               <label class="campo">Fim<input type="time" name="fim" value="${esc(horaInput(m.fim))}" step="300" required></label>
             </div>
-            <p class="nota">Atualiza esta mesma reunião. O resultado não muda para «Reprogramado» e o Outlook não é alterado nesta fase.</p>
+            <p class="nota">Atualiza esta mesma reunião. O resultado não muda para «Reprogramado».${o.estado === 'criado' ? ' O evento Outlook também é atualizado e os convidados recebem a nova hora.' : ''}</p>
             <button type="submit" class="botao botao-principal">Guardar nova data</button>
           </form>` : ''}
         ${m.notas ? `<pre class="notas">${esc(m.notas)}</pre>` : ''}
@@ -533,6 +604,19 @@
           atualizarContadorPendentes();
           return desenhar();
         }
+        case 'desligar-calendario': {
+          const d = await api('/api/calendario/desligar', { method: 'POST', body: {} });
+          estado.eu.calendario = d.calendario;
+          mensagem('Calendário desligado.');
+          return desenhar();
+        }
+        case 'outlook-de-novo': {
+          alvo.disabled = true;
+          const { reuniao, outlook } = await api(`/api/reunioes/${encodeURIComponent(detalhe.id)}/outlook`, { method: 'POST', body: { convidar: [] } });
+          detalhe = { ...detalhe, reuniao, outlook };
+          mensagem(outlook.estado === 'falhou' ? `Outlook: ${outlook.erro}` : 'Evento Outlook criado (sem convites).', outlook.estado === 'falhou');
+          return desenhar();
+        }
         case 'admin-flag': admin[Number(alvo.dataset.indice)].admin = alvo.checked; return;
         case 'admin-remover': admin.splice(Number(alvo.dataset.indice), 1); return desenhar();
         case 'admin-guardar': admin = (await api('/api/admin/utilizadores', { method: 'PUT', body: { utilizadores: admin } })).utilizadores; mensagem('Lista guardada.'); return desenhar();
@@ -560,8 +644,11 @@
 
   conteudo.addEventListener('change', (ev) => {
     const el = ev.target;
+    if (el.dataset.convidar && formulario) { formulario.convidar[el.dataset.convidar] = el.checked; return; }
     const campo = el.dataset.campo;
     if (!campo || !formulario) return;
+    if (campo === 'outlook') { formulario.outlook = el.checked; return desenhar(); }
+    if (['data', 'inicio', 'fim'].includes(campo)) { formulario[campo] = el.value; verificarDisponibilidade(); }
     if (campo === 'comCliente') { formulario.comCliente = el.checked; if (!el.checked) formulario.cliente = null; sugerirTipo(formulario); return desenhar(); }
     if (campo === 'tipo') { formulario.tipo = el.value; formulario.tipoManual = true; return; }
     if (campo === 'empreendimento') { formulario.empreendimento = el.value; return desenhar(); }
@@ -590,9 +677,10 @@
         const dados = new FormData(form);
         const inicio = paraIso(dados.get('data'), dados.get('inicio'));
         const fim = paraIso(dados.get('data'), dados.get('fim'));
-        const { reuniao } = await api(`/api/reunioes/${encodeURIComponent(detalhe.id)}`, { method: 'PATCH', body: { inicio, fim } });
+        const { reuniao, outlook } = await api(`/api/reunioes/${encodeURIComponent(detalhe.id)}`, { method: 'PATCH', body: { inicio, fim } });
         detalhe = { ...detalhe, reuniao, reprogramar: false };
-        mensagem('Data e hora atualizadas.');
+        const txt = { atualizado: ' O evento Outlook também foi atualizado.', simulado: ' (Outlook: simulação.)', falhou: ' O Outlook não foi atualizado: verifique o evento.' }[outlook && outlook.estado] || '';
+        mensagem('Data e hora atualizadas no HubSpot.' + txt, outlook && outlook.estado === 'falhou');
         return desenhar();
       }
       if (tipo === 'admin-adicionar') {

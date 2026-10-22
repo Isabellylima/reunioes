@@ -141,6 +141,10 @@ async function tratar(request, env) {
     throw e;
   }
 
+  if (request.method === 'GET' && caminho === '/auth/calendario/ligar') {
+    return iniciarLigacaoCalendario(env, utilizador);
+  }
+
   if (!caminho.startsWith('/api/')) {
     return env.ASSETS.fetch(request);
   }
@@ -155,7 +159,15 @@ async function tratar(request, env) {
 
   if (m === 'GET' && caminho === '/api/me') {
     const sair = utilizador.autenticacao === 'access' ? '/cdn-cgi/access/logout' : '/auth/sair';
-    return json({ ...utilizador, modo: fonte.modo, escritaAtiva: fonte.escritaAtiva, sair });
+    return json({ ...utilizador, modo: fonte.modo, escritaAtiva: fonte.escritaAtiva, sair, calendario: await estadoCalendario(env, utilizador) });
+  }
+  if (m === 'GET' && caminho === '/api/calendario/disponibilidade') {
+    const inicio = Date.parse(url.searchParams.get('inicio') || '');
+    const fim = Date.parse(url.searchParams.get('fim') || '');
+    return json(await disponibilidade(env, utilizador, inicio, fim));
+  }
+  if (m === 'POST' && caminho === '/api/calendario/desligar') {
+    return desligarCalendario(env, utilizador);
   }
   if (m === 'GET' && caminho === '/api/empreendimentos') {
     return json({ empreendimentos: await fonte.empreendimentos() });
@@ -171,7 +183,7 @@ async function tratar(request, env) {
     if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de || ate - de > 62 * 864e5) {
       throw new ErroHttp(400, 'Intervalo de datas inválido.');
     }
-    return json({ reunioes: await fonte.listarReunioes(utilizador.ownerId, de, ate) });
+    return json({ reunioes: await marcarDuplicados(env, utilizador, await fonte.listarReunioes(utilizador.ownerId, de, ate)) });
   }
   if (m === 'GET' && caminho === '/api/reunioes/por-classificar') {
     return json({ reunioes: await fonte.porClassificar(utilizador.ownerId, Date.now()) });
@@ -185,8 +197,9 @@ async function tratar(request, env) {
     if (!reuniao || String(reuniao.ownerId) !== String(utilizador.ownerId)) {
       throw new ErroHttp(404, 'Reunião não encontrada.');   // 404 também para reuniões de outros: não revela que existem
     }
-    if (m === 'GET' && partes.length === 3) return json({ reuniao });
+    if (m === 'GET' && partes.length === 3) return json({ reuniao, outlook: await resumoOutlook(env, id) });
     if (m === 'PATCH' && partes.length === 3) return reprogramar(request, env, fonte, utilizador, reuniao);
+    if (m === 'POST' && partes[3] === 'outlook' && partes.length === 4) return tentarOutlookDeNovo(request, env, fonte, utilizador, reuniao);
     if (m === 'POST' && partes[3] === 'resultado' && partes.length === 4) return atualizarResultado(request, env, fonte, utilizador, reuniao);
   }
   if (partes[1] === 'admin' && partes[2] === 'utilizadores' && partes.length === 3) {
@@ -243,6 +256,9 @@ async function autenticar(request, env) {
   let email;
   let autenticacao;
 
+  if (env.AUTH_MODE === 'entra' && !entra) {
+    throw new ErroHttp(503, 'AUTH_MODE=entra exige o login Microsoft configurado (MICROSOFT_*).');
+  }
   const sessao = entra ? await lerCookieAssinado(request, env, COOKIE_SESSAO) : null;
   if (sessao) {
     email = String(sessao.e || '').toLowerCase();
@@ -335,6 +351,7 @@ async function concluirLoginMicrosoft(request, env) {
     console.error(JSON.stringify({ evento: 'entra_segredo_parece_secret_id' }));
     return paginaEntrada(env, 'MICROSOFT_CLIENT_SECRET contém o «Secret ID» (formato de GUID) em vez do «Value» do segredo. Em Entra ID › Certificates & secrets, copie a coluna «Value».', 503, limpar);
   }
+  if (temporario.t === 'cal') return concluirLigacaoCalendario(request, env, temporario, codigo, limpar);
 
   const r = await fetch(`https://login.microsoftonline.com/${env.ENTRA_TENANT_ID}/oauth2/v2.0/token`, {
     method: 'POST',
@@ -387,7 +404,7 @@ async function concluirLoginMicrosoft(request, env) {
 
 // Diagnóstico da configuração do login, sem valores secretos. Só para quem já tem sessão (Access ou Microsoft).
 async function diagnosticoLogin(request, env) {
-  const temAccess = Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD && request.headers.get('Cf-Access-Jwt-Assertion'));
+  const temAccess = Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD && env.AUTH_MODE !== 'entra' && request.headers.get('Cf-Access-Jwt-Assertion'));
   let autorizado = false;
   if (temAccess) {
     try { await verificarJwtAccess(request.headers.get('Cf-Access-Jwt-Assertion'), env); autorizado = true; } catch { /* inválido */ }
@@ -408,6 +425,10 @@ async function diagnosticoLogin(request, env) {
     origemSessionSecret: env._diagSessionSecret || null,
     accessAtivo: Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD),
     authMode: env.AUTH_MODE || 'transição (Access + Microsoft)',
+    sessaoHoras: Math.min(Math.max(Number(env.SESSAO_HORAS) || 12, 1), 24),
+    calendarioModo: ['simulacao', 'real'].includes(env.CALENDAR_MODE) ? env.CALENDAR_MODE : 'desligado',
+    calendarioUtilizadoresTeste: listaEmails(env.CALENDAR_TEST_EMAILS).length,
+    calendarioChaveCifra: env.CALENDAR_TOKEN_KEY ? 'CALENDAR_TOKEN_KEY' : 'derivada do SESSION_SECRET',
   });
 }
 
@@ -598,7 +619,7 @@ async function criarReuniao(request, env, fonte, utilizador) {
   const chave = (request.headers.get('Idempotency-Key') || '').trim();
   if (!/^[A-Za-z0-9-]{16,64}$/.test(chave)) throw new ErroHttp(400, 'Chave de idempotência em falta.');
   const jaFeita = await lerIdempotencia(env, utilizador, chave);
-  if (jaFeita) return json({ reuniao: await fonte.lerReuniao(jaFeita), repetida: true });
+  if (jaFeita) return json({ reuniao: await fonte.lerReuniao(jaFeita), repetida: true, outlook: await resumoOutlook(env, jaFeita) });
 
   const corpo = await lerJson(request);
   const empreendimentos = await fonte.empreendimentos();
@@ -632,7 +653,45 @@ async function criarReuniao(request, env, fonte, utilizador) {
   });
   await guardarIdempotencia(env, utilizador, chave, criada.id);
   await auditar(env, utilizador, 'reuniao.criar', criada.id, { tipo: pedido.tipo });
-  return json({ reuniao: criada }, 201);
+
+  // Outlook/Teams só depois de a reunião existir no HubSpot. Se falhar, a reunião fica no HubSpot e pode tentar-se de novo.
+  let outlook = { estado: 'nao_pedido' };
+  let final = criada;
+  if (pedido.outlook) {
+    const convidados = contactos.filter((c) => pedido.convidar.includes(String(c.id)) && c.email);
+    outlook = await criarEventoOutlook(env, utilizador, criada, convidados, chave);
+    if (outlook.ligacao && !criada.ligacao) {
+      final = await fonte.atualizarReuniao(criada.id, {
+        ligacao: outlook.ligacao,
+        notas: juntarNotas(criada.notas, linhaNota(utilizador, `Teams: ${outlook.ligacao}`)),
+      });
+    }
+  }
+  return json({ reuniao: final, outlook }, 201);
+}
+
+async function tentarOutlookDeNovo(request, env, fonte, utilizador, reuniao) {
+  exigirEscrita(fonte);
+  const corpo = await lerJson(request);
+  const pedidos = Array.isArray(corpo.convidar) ? corpo.convidar.map(String) : [];
+  const convidados = reuniao.contactos.filter((c) => pedidos.includes(String(c.id)) && c.email);
+  const anterior = await lerMapa(env, reuniao.id);
+  if (anterior && anterior.estado === 'falhou') await env.REUNIOES_KV.delete(`map:${reuniao.id}`);
+  const outlook = await criarEventoOutlook(env, utilizador, reuniao, convidados, `retry-${reuniao.id}`);
+  let final = reuniao;
+  if (outlook.ligacao && !reuniao.ligacao) {
+    final = await fonte.atualizarReuniao(reuniao.id, {
+      ligacao: outlook.ligacao, notas: juntarNotas(reuniao.notas, linhaNota(utilizador, `Teams: ${outlook.ligacao}`)),
+    });
+  }
+  return json({ reuniao: final, outlook });
+}
+
+async function resumoOutlook(env, reuniaoId) {
+  const mapa = await lerMapa(env, reuniaoId);
+  if (!mapa) return { estado: 'sem_evento' };
+  if (mapa.estado === 'falhou') return { estado: 'falhou', erro: mapa.erro || '' };
+  return { estado: mapa.modo === 'simulacao' ? 'simulado' : 'criado', ligacao: mapa.ligacao || '', convidados: mapa.convidados || 0 };
 }
 
 async function reprogramar(request, env, fonte, utilizador, reuniao) {
@@ -647,7 +706,9 @@ async function reprogramar(request, env, fonte, utilizador, reuniao) {
     inicio, fim, notas: juntarNotas(reuniao.notas, nota),
   });
   await auditar(env, utilizador, 'reuniao.reprogramar', reuniao.id, {});
-  return json({ reuniao: atualizada });
+  // O mesmo evento Outlook é atualizado (sem criar outro); o Outlook avisa os convidados da nova hora.
+  const outlook = await reprogramarEventoOutlook(env, utilizador, reuniao.id, inicio, fim);
+  return json({ reuniao: atualizada, outlook });
 }
 
 async function atualizarResultado(request, env, fonte, utilizador, reuniao) {
@@ -690,8 +751,13 @@ function validarNovaReuniao(c, empreendimentos) {
   if (clienteId && (!/^\d{1,20}$/.test(clienteId) || clienteId === contactoId)) throw new ErroHttp(400, 'Cliente inválido.');
   const ligacao = limparTexto(c.ligacao, 500);
   if (ligacao && !/^https:\/\/[^\s]+$/.test(ligacao)) throw new ErroHttp(400, 'A ligação tem de começar por https://');
+  // Convites: só os contactos explicitamente escolhidos, e só entre os contactos da reunião
+  const convidar = Array.isArray(c.convidar) ? [...new Set(c.convidar.map(String))] : [];
+  if (convidar.some((id) => id !== contactoId && id !== clienteId)) throw new ErroHttp(400, 'Só pode convidar contactos desta reunião.');
   return {
     empreendimento, tipo, modalidade, inicio, fim, contactoId, clienteId,
+    outlook: c.outlook === true,
+    convidar,
     local: limparTexto(c.local, 300),
     ligacao,
     tipologia: limparTexto(c.tipologia, 40),
@@ -912,6 +978,7 @@ function fonteHubSpot(env) {
       if (alteracoes.fim != null) propriedades.hs_meeting_end_time = new Date(alteracoes.fim).toISOString();
       if (alteracoes.resultado) propriedades.hs_meeting_outcome = alteracoes.resultado;
       if (alteracoes.notas != null) propriedades.hs_internal_meeting_notes = alteracoes.notas;
+      if (alteracoes.ligacao) propriedades.hs_video_conference_url = alteracoes.ligacao;
       await pedir('PATCH', `/crm/v3/objects/meetings/${encodeURIComponent(id)}`, { properties: propriedades });
       return this.lerReuniao(id);
     },
@@ -967,6 +1034,7 @@ function fonteDemo() {
       if (alt.fim != null) r.fim = alt.fim;
       if (alt.resultado) r.resultado = alt.resultado;
       if (alt.notas != null) r.notas = alt.notas;
+      if (alt.ligacao) r.ligacao = alt.ligacao;
       return comContactos(r);
     },
   };
@@ -1026,6 +1094,289 @@ function resumoTexto(t) {
   let h = 2166136261;
   for (const c of t) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
   return h.toString(36);
+}
+
+/* ---------- Calendário Outlook / Teams (Microsoft Graph, permissões delegadas) ----------
+   Consentimento SEPARADO do login: o utilizador clica «Ligar o meu calendário» e autoriza só
+   "offline_access Calendars.ReadWrite" sobre o SEU calendário. O token de renovação fica cifrado (AES-GCM) em KV.
+   Modos (CALENDAR_MODE):
+     desligado  (omissão) nada é feito no Outlook;
+     simulacao  respostas fictícias: nenhum evento é criado, alterado ou consultado no Outlook;
+     real       Graph a sério; se CALENDAR_TEST_EMAILS existir, só esses utilizadores (os outros ficam em simulação).
+   O cancelamento no Outlook NÃO está implementado (decisão pendente, SPEC §P). */
+
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const AMBITOS_CALENDARIO = 'offline_access Calendars.ReadWrite';
+const PROP_HUBSPOT = 'String {6f1f3c5e-4c9a-4b8e-9d2a-0f7e2a9b1c34} Name FercoporHubSpotMeetingId';
+
+function modoCalendario(env, email) {
+  const modo = ['simulacao', 'real'].includes(env.CALENDAR_MODE) ? env.CALENDAR_MODE : 'desligado';
+  if (modo !== 'real') return modo;
+  const teste = listaEmails(env.CALENDAR_TEST_EMAILS);
+  return !teste.length || teste.includes(email) ? 'real' : 'simulacao';
+}
+
+async function estadoCalendario(env, utilizador) {
+  const modo = modoCalendario(env, utilizador.email);
+  if (modo === 'desligado') return { modo, ligado: false };
+  const guardado = env.REUNIOES_KV ? await env.REUNIOES_KV.get(`cal:${utilizador.email}`, 'json') : null;
+  return { modo, ligado: Boolean(guardado && (guardado.rt || guardado.simulado)) };
+}
+
+/* --- Consentimento --- */
+
+async function iniciarLigacaoCalendario(env, utilizador) {
+  const modo = modoCalendario(env, utilizador.email);
+  if (modo === 'desligado') throw new ErroHttp(403, 'A ligação ao calendário ainda não está ativa.');
+  if (!env.REUNIOES_KV) throw new ErroHttp(503, 'Ligação KV (REUNIOES_KV) em falta.');
+  if (modo === 'simulacao') {
+    await env.REUNIOES_KV.put(`cal:${utilizador.email}`, JSON.stringify({ simulado: true, atualizado: Date.now() }));
+    return new Response(null, { status: 302, headers: { Location: '/#/inicio', 'Cache-Control': 'no-store' } });
+  }
+  if (utilizador.autenticacao !== 'microsoft') throw new ErroHttp(403, 'Inicie sessão com a Microsoft para ligar o calendário.');
+  const estado = aleatorio(24);
+  const verificador = aleatorio(48);
+  const desafio = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verificador))));
+  const temporario = await assinar(env, { t: 'cal', s: estado, v: verificador, e: utilizador.email, exp: agoraSeg() + 600 });
+  const autorizar = new URL(`https://login.microsoftonline.com/${env.ENTRA_TENANT_ID}/oauth2/v2.0/authorize`);
+  autorizar.search = new URLSearchParams({
+    client_id: env.ENTRA_CLIENT_ID, response_type: 'code', redirect_uri: enderecoRetorno(env), response_mode: 'query',
+    scope: AMBITOS_CALENDARIO, state: estado, code_challenge: desafio, code_challenge_method: 'S256', login_hint: utilizador.email,
+  }).toString();
+  return new Response(null, {
+    status: 302,
+    headers: { Location: autorizar.toString(), 'Set-Cookie': cookie(COOKIE_OAUTH, temporario, 600), 'Cache-Control': 'no-store' },
+  });
+}
+
+// Chamado por /auth/retorno quando o pedido temporário é do tipo «cal»
+async function concluirLigacaoCalendario(request, env, temporario, codigo, limpar) {
+  const sessao = await lerCookieAssinado(request, env, COOKIE_SESSAO);
+  if (!sessao || String(sessao.e).toLowerCase() !== temporario.e) {
+    return paginaEntrada(env, 'Sessão em falta ou diferente: volte a iniciar sessão e a ligar o calendário.', 401, limpar);
+  }
+  const tokens = await pedirTokenMicrosoft(env, { grant_type: 'authorization_code', code: codigo, code_verifier: temporario.v, scope: AMBITOS_CALENDARIO });
+  if (!tokens.ok) return paginaEntrada(env, `A Microsoft não autorizou o acesso ao calendário (${tokens.ref}). ${tokens.dica}`, 502, limpar);
+  // O consentimento tem de ser da MESMA pessoa que tem a sessão
+  const eu = await fetch(`${GRAPH}/me?$select=id,mail,userPrincipalName`, { headers: { Authorization: `Bearer ${tokens.dados.access_token}` } });
+  const perfil = eu.ok ? await eu.json() : {};
+  const emailGraph = String(perfil.mail || perfil.userPrincipalName || '').toLowerCase();
+  if (emailGraph !== temporario.e) {
+    console.error(JSON.stringify({ evento: 'calendario_conta_diferente' }));
+    return paginaEntrada(env, 'A conta Microsoft autorizada não é a mesma da sessão. Nada foi guardado.', 403, limpar);
+  }
+  if (!tokens.dados.refresh_token) return paginaEntrada(env, 'A Microsoft não devolveu a autorização permanente (offline_access).', 502, limpar);
+  await env.REUNIOES_KV.put(`cal:${temporario.e}`, JSON.stringify({ rt: await cifrar(env, tokens.dados.refresh_token), atualizado: Date.now(), oid: perfil.id || '' }));
+  acessosGraph.delete(temporario.e);
+  const h = new Headers({ Location: '/#/inicio', 'Cache-Control': 'no-store' });
+  h.append('Set-Cookie', limpar);
+  return new Response(null, { status: 302, headers: h });
+}
+
+async function desligarCalendario(env, utilizador) {
+  if (env.REUNIOES_KV) await env.REUNIOES_KV.delete(`cal:${utilizador.email}`);
+  acessosGraph.delete(utilizador.email);
+  await auditar(env, utilizador, 'calendario.desligar', null, {});
+  return json({ calendario: await estadoCalendario(env, utilizador) });
+}
+
+async function pedirTokenMicrosoft(env, parametros) {
+  const r = await fetch(`https://login.microsoftonline.com/${env.ENTRA_TENANT_ID}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: env.ENTRA_CLIENT_ID, client_secret: env.ENTRA_CLIENT_SECRET, redirect_uri: enderecoRetorno(env), ...parametros }).toString(),
+  });
+  let dados = {};
+  try { dados = await r.json(); } catch { /* sem JSON */ }
+  if (r.ok) return { ok: true, dados };
+  const codigoAad = (String(dados.error_description || '').match(/AADSTS\d+/) || [])[0] || '';
+  console.error(JSON.stringify({ evento: 'microsoft_token_falhou', http: r.status, erro: dados.error || '', codigo: codigoAad, trace_id: dados.trace_id || '' }));
+  return { ok: false, erro: dados.error || '', ref: codigoAad || dados.error || `HTTP ${r.status}`, dica: DICAS_AADSTS[codigoAad] || '' };
+}
+
+/* --- Token de acesso Graph (renovado a partir do token cifrado) --- */
+
+const acessosGraph = new Map();   // email → { token, ate }
+
+async function acessoGraph(env, email) {
+  // A autorização em KV é sempre confirmada: desligar o calendário (em qualquer instância) corta o acesso de imediato
+  const registo = env.REUNIOES_KV ? await env.REUNIOES_KV.get(`cal:${email}`, 'json') : null;
+  if (!registo || !registo.rt) {
+    acessosGraph.delete(email);
+    throw new ErroHttp(409, 'O calendário Outlook não está ligado. Use «Ligar o meu calendário».');
+  }
+  const guardado = acessosGraph.get(email);
+  if (guardado && guardado.rt === registo.rt && guardado.ate > Date.now() + 60e3) return guardado.token;
+  const tokens = await pedirTokenMicrosoft(env, { grant_type: 'refresh_token', refresh_token: await decifrar(env, registo.rt), scope: AMBITOS_CALENDARIO });
+  if (!tokens.ok) {
+    if (tokens.erro === 'invalid_grant') await env.REUNIOES_KV.delete(`cal:${email}`);
+    throw new ErroHttp(409, 'A autorização do calendário expirou ou foi retirada. Ligue de novo o calendário.');
+  }
+  let rtAtual = registo.rt;
+  if (tokens.dados.refresh_token) {
+    rtAtual = await cifrar(env, tokens.dados.refresh_token);
+    await env.REUNIOES_KV.put(`cal:${email}`, JSON.stringify({ ...registo, rt: rtAtual, atualizado: Date.now() }));
+  }
+  acessosGraph.set(email, { token: tokens.dados.access_token, rt: rtAtual, ate: Date.now() + (Number(tokens.dados.expires_in) || 3000) * 1000 });
+  return tokens.dados.access_token;
+}
+
+async function graph(env, email, metodo, caminho, corpo) {
+  const r = await fetch(GRAPH + caminho, {
+    method: metodo,
+    headers: { Authorization: `Bearer ${await acessoGraph(env, email)}`, 'Content-Type': 'application/json', Prefer: 'outlook.timezone="UTC"' },
+    body: corpo ? JSON.stringify(corpo) : undefined,
+  });
+  if (!r.ok) {
+    let erro = {};
+    try { erro = await r.json(); } catch { /* sem JSON */ }
+    console.error(JSON.stringify({ evento: 'graph_falhou', metodo, http: r.status, codigo: (erro.error && erro.error.code) || '' }));
+    throw new ErroHttp(502, `O Outlook não respondeu como esperado (${(erro.error && erro.error.code) || r.status}).`);
+  }
+  return r.status === 204 ? {} : r.json();
+}
+
+/* --- Disponibilidade: só períodos ocupados, sem assunto nem detalhes --- */
+
+async function disponibilidade(env, utilizador, inicio, fim) {
+  validarHorario(inicio, fim);
+  const modo = modoCalendario(env, utilizador.email);
+  if (modo === 'desligado') return { modo, ocupados: [], conflito: false };
+  let ocupados;
+  if (modo === 'simulacao') {
+    // Simulação: um compromisso fictício diário das 13:00 às 14:00 (Lisboa)
+    const dia = new Date(inicio);
+    const base = Date.UTC(dia.getUTCFullYear(), dia.getUTCMonth(), dia.getUTCDate(), 13);
+    const i = base - desvioLisboaHoras(base) * 36e5;
+    ocupados = [{ inicio: i, fim: i + 36e5, estado: 'busy' }];
+  } else {
+    const margem = 4 * 36e5;
+    const r = await graph(env, utilizador.email, 'POST', '/me/calendar/getSchedule', {
+      schedules: [utilizador.email],
+      startTime: { dateTime: new Date(inicio - margem).toISOString().replace('Z', ''), timeZone: 'UTC' },
+      endTime: { dateTime: new Date(fim + margem).toISOString().replace('Z', ''), timeZone: 'UTC' },
+      availabilityViewInterval: 15,
+    });
+    const itens = ((r.value && r.value[0] && r.value[0].scheduleItems) || []);
+    ocupados = itens.filter((x) => x.status && x.status !== 'free').map((x) => ({
+      inicio: Date.parse(x.start.dateTime + 'Z'), fim: Date.parse(x.end.dateTime + 'Z'), estado: x.status,
+    }));
+  }
+  const conflito = ocupados.some((o) => o.inicio < fim && o.fim > inicio);
+  return { modo, ocupados, conflito };
+}
+
+/* --- Eventos Outlook ligados às reuniões HubSpot (mapa em KV, sem propriedades novas no HubSpot) --- */
+
+async function lerMapa(env, reuniaoId) {
+  return env.REUNIOES_KV ? env.REUNIOES_KV.get(`map:${reuniaoId}`, 'json') : null;
+}
+
+async function guardarMapa(env, utilizador, reuniaoId, mapa) {
+  if (!env.REUNIOES_KV) return;
+  await env.REUNIOES_KV.put(`map:${reuniaoId}`, JSON.stringify(mapa));
+  const chave = `mapdono:${utilizador.ownerId}`;
+  const lista = (await env.REUNIOES_KV.get(chave, 'json')) || [];
+  const nova = [{ r: String(reuniaoId), i: mapa.inicio }, ...lista.filter((x) => x.r !== String(reuniaoId))].slice(0, 300);
+  await env.REUNIOES_KV.put(chave, JSON.stringify(nova));
+}
+
+async function criarEventoOutlook(env, utilizador, reuniao, convidados, chave) {
+  const modo = modoCalendario(env, utilizador.email);
+  if (modo === 'desligado') return { estado: 'desligado' };
+  const existente = await lerMapa(env, reuniao.id);
+  if (existente && existente.evento) return { estado: existente.modo === 'simulacao' ? 'simulado' : 'criado', ligacao: existente.ligacao || '', repetido: true };
+  const online = reuniao.modalidade === 'online';
+  let evento;
+  try {
+    if (modo === 'simulacao') {
+      evento = { id: 'SIMULADO-' + aleatorio(9), onlineMeeting: online ? { joinUrl: 'https://teams.microsoft.com/l/meetup-join/SIMULACAO' } : null };
+    } else {
+      evento = await graph(env, utilizador.email, 'POST', '/me/events', {
+        subject: reuniao.titulo,
+        // O convite NÃO leva as notas internas (tipologia, orçamento, observações)
+        body: { contentType: 'text', content: 'Reunião FERCOPOR. Em caso de impedimento, contacte o seu coordenador.' },
+        start: { dateTime: new Date(reuniao.inicio).toISOString().replace('Z', ''), timeZone: 'UTC' },
+        end: { dateTime: new Date(reuniao.fim).toISOString().replace('Z', ''), timeZone: 'UTC' },
+        location: reuniao.local ? { displayName: reuniao.local } : undefined,
+        attendees: convidados.map((c) => ({ emailAddress: { address: c.email, name: c.nome }, type: 'required' })),
+        isOnlineMeeting: online,
+        onlineMeetingProvider: online ? 'teamsForBusiness' : undefined,
+        transactionId: chave,   // a Microsoft não cria um 2.º evento se o pedido for repetido
+        singleValueExtendedProperties: [{ id: PROP_HUBSPOT, value: String(reuniao.id) }],
+      });
+    }
+  } catch (e) {
+    await guardarMapa(env, utilizador, reuniao.id, { estado: 'falhou', modo, inicio: reuniao.inicio, erro: e.message, quando: Date.now() });
+    await auditar(env, utilizador, 'outlook.criar_falhou', reuniao.id, {});
+    return { estado: 'falhou', erro: e.message };
+  }
+  const ligacao = (evento.onlineMeeting && evento.onlineMeeting.joinUrl) || '';
+  await guardarMapa(env, utilizador, reuniao.id, {
+    evento: evento.id, modo, inicio: reuniao.inicio, ligacao, convidados: convidados.length, quando: Date.now(),
+  });
+  await auditar(env, utilizador, 'outlook.criar', reuniao.id, { modo, convidados: convidados.length, online });
+  return { estado: modo === 'simulacao' ? 'simulado' : 'criado', ligacao };
+}
+
+async function reprogramarEventoOutlook(env, utilizador, reuniaoId, inicio, fim) {
+  const mapa = await lerMapa(env, reuniaoId);
+  if (!mapa || !mapa.evento) return { estado: 'sem_evento' };
+  const modo = modoCalendario(env, utilizador.email);
+  if (modo === 'desligado') return { estado: 'desligado' };
+  try {
+    if (mapa.modo === 'real' && modo === 'real') {
+      await graph(env, utilizador.email, 'PATCH', `/me/events/${encodeURIComponent(mapa.evento)}`, {
+        start: { dateTime: new Date(inicio).toISOString().replace('Z', ''), timeZone: 'UTC' },
+        end: { dateTime: new Date(fim).toISOString().replace('Z', ''), timeZone: 'UTC' },
+      });
+    }
+  } catch (e) {
+    await auditar(env, utilizador, 'outlook.reprogramar_falhou', reuniaoId, {});
+    return { estado: 'falhou', erro: e.message };
+  }
+  await guardarMapa(env, utilizador, reuniaoId, { ...mapa, inicio, reprogramado: Date.now() });
+  await auditar(env, utilizador, 'outlook.reprogramar', reuniaoId, { modo: mapa.modo });
+  return { estado: mapa.modo === 'simulacao' ? 'simulado' : 'atualizado' };
+}
+
+// Possíveis duplicados: reunião criada pela app (com evento Outlook) + reunião que a sincronização
+// HubSpot ↔ Outlook criou a partir desse evento (BIDIRECTIONAL_SYNC), à mesma hora e do mesmo dono.
+async function marcarDuplicados(env, utilizador, reunioes) {
+  if (!env.REUNIOES_KV || !reunioes.length) return reunioes;
+  const nossos = (await env.REUNIOES_KV.get(`mapdono:${utilizador.ownerId}`, 'json')) || [];
+  if (!nossos.length) return reunioes;
+  const ids = new Set(nossos.map((x) => x.r));
+  return reunioes.map((m) => {
+    const sincronizada = m.origem === 'BIDIRECTIONAL_SYNC';
+    const par = reunioes.find((o) => o.id !== m.id && Math.abs(o.inicio - m.inicio) < 2 * 6e4
+      && (sincronizada ? ids.has(o.id) : (ids.has(m.id) && o.origem === 'BIDIRECTIONAL_SYNC')));
+    return par ? { ...m, possivelDuplicado: par.id } : m;
+  });
+}
+
+/* --- Cifra dos tokens de renovação (AES-GCM; chave própria ou derivada do SESSION_SECRET) --- */
+
+async function chaveCifra(env) {
+  const material = new TextEncoder().encode('fercopor-reunioes/calendario/v1|' + (env.CALENDAR_TOKEN_KEY || env.SESSION_SECRET));
+  const bruto = await crypto.subtle.digest('SHA-256', material);
+  return crypto.subtle.importKey('raw', bruto, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+async function cifrar(env, texto) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const cifrado = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await chaveCifra(env), new TextEncoder().encode(texto));
+  return `${base64Url(iv)}.${base64Url(new Uint8Array(cifrado))}`;
+}
+
+async function decifrar(env, valor) {
+  const [iv, dados] = String(valor).split('.');
+  try {
+    const claro = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytesBase64Url(iv) }, await chaveCifra(env), bytesBase64Url(dados));
+    return new TextDecoder().decode(claro);
+  } catch {
+    throw new ErroHttp(409, 'A autorização do calendário não pôde ser lida (chave alterada). Ligue de novo o calendário.');
+  }
 }
 
 /* ---------- Idempotência e auditoria (KV) ---------- */
@@ -1096,4 +1447,4 @@ function comSeguranca(resposta) {
   return r;
 }
 
-export const _teste = { gerarTitulo, gerarNotas, papelDoContacto, validarNovaReuniao, juntarNotas, tratar, ErroHttp };
+export const _teste = { gerarTitulo, gerarNotas, papelDoContacto, validarNovaReuniao, juntarNotas, tratar, ErroHttp, marcarDuplicados };

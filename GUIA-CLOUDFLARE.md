@@ -110,6 +110,36 @@ A app faz o login Microsoft sozinha (OpenID Connect com PKCE). Pede **apenas** `
 
 Os utilizadores autorizados e a ligação ao HubSpot (e-mail → proprietário) não mudam.
 
+### 4. Antes do corte: segredo de sessão próprio
+Crie `SESSION_SECRET` (tipo **Secret**, 40 ou mais caracteres, gerado num gestor de palavras-passe; não o cole em conversas nem documentos). Com ele, as sessões deixam de depender do client secret da Microsoft. Criar ou mudar este valor termina as sessões abertas: todos voltam a iniciar sessão uma vez.
+
+### 5. Recuperação se o login Microsoft deixar de funcionar
+1. Abra `/auth/diagnostico` (com sessão) ou veja os **Logs** do Worker (`entra_troca_codigo_falhou`, com o código AADSTS).
+2. **Causa mais comum: o client secret expirou.** Entra ID → Certificates & secrets → New client secret → atualizar `MICROSOFT_CLIENT_SECRET` → Deploy.
+3. **Acesso de emergência:** no Worker, apague `AUTH_MODE` e volte a ligar a aplicação do Cloudflare Access (Zero Trust → Access → Applications). O código aceita de novo o Access de imediato. Repor `AUTH_MODE` = `entra` quando o login Microsoft estiver corrigido.
+4. Anote a data de expiração do client secret e renove-o um mês antes.
+
+## Calendário Outlook e Teams (Microsoft Graph, permissões delegadas)
+
+Cada coordenador liga o **seu** calendário na página inicial («Ligar o meu calendário Outlook»). É um consentimento separado do login.
+
+### Permissões a acrescentar no Entra ID (API permissions → Add → Microsoft Graph → Delegated)
+| Permissão | Para quê | Consentimento |
+|---|---|---|
+| `Calendars.ReadWrite` | Disponibilidade (`getSchedule`), criar e reprogramar eventos, convites aos participantes, ligação Teams (evento com `isOnlineMeeting`) | Delegada, sem consentimento obrigatório de administrador; a política do tenant pode exigir aprovação da TI |
+| `offline_access` | Manter a ligação sem pedir novo login todos os dias | Baixo impacto |
+
+Não são precisas `OnlineMeetings.ReadWrite`, `Mail.Send` nem permissões de **aplicação**. A app só atua no calendário de quem autorizou. Se a TI tiver de aprovar, a justificação é: «Delegada, por utilizador, só sobre o próprio calendário, para a app de reuniões criar e atualizar os eventos que o próprio agenda».
+
+### Variáveis
+| Nome | Tipo | Valor |
+|---|---|---|
+| `CALENDAR_MODE` | Text | `simulacao` para experimentar sem tocar no Outlook; `real` só depois da autorização do teste |
+| `CALENDAR_TEST_EMAILS` | Text | Com `real`: os únicos utilizadores com Outlook real (ex.: o seu e-mail). Os outros ficam em simulação |
+| `CALENDAR_TOKEN_KEY` | Secret, opcional | Chave própria para cifrar as autorizações guardadas. Se faltar, deriva-se do `SESSION_SECRET` |
+
+Sem `CALENDAR_MODE`, o calendário está desligado e a app funciona como antes.
+
 ## Mais tarde, só com autorização: ligar ao HubSpot
 
 1. **Leitura:** Private App «FERCOPOR Reuniões» com âmbitos de leitura de contactos, de proprietários, do esquema de negócios (opções de «Empreendimento») e de reuniões.

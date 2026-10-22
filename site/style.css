@@ -233,6 +233,7 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 .legenda span { display: flex; align-items: center; gap: 8px; }
 .legenda i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid currentColor; }
 .legenda i.pendente-legenda { border: 2px dashed var(--ambar-texto); }
+.cab-calendario { font-size: 17px; font-weight: 700; }
 
 /* ---------- Administração ---------- */
 .tabela { width: 100%; border-collapse: collapse; background: var(--superficie); border: 1px solid var(--linha); border-radius: var(--raio); }

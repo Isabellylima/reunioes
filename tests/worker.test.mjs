@@ -11,6 +11,7 @@ function kvMemoria(inicial = {}) {
   return {
     async get(k, tipo) { const v = m.get(k); if (v == null) return null; return tipo === 'json' ? JSON.parse(v) : v; },
     async put(k, v) { m.set(k, v); },
+    async delete(k) { m.delete(k); },
     _m: m,
   };
 }

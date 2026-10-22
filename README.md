@@ -3,7 +3,7 @@
 Interface simplificada para os coordenadores agendarem, consultarem e atualizarem reuniões comerciais no HubSpot. O HubSpot continua a ser o sistema oficial das reuniões.
 
 - `site/`: aplicação para o Cloudflare Pages (modo avançado, `_worker.js`). Sem dependências e sem passo de compilação.
-- `tests/`: testes do servidor (`node --test tests/worker.test.mjs`).
+- `tests/`: testes do servidor (`node --test tests/worker.test.mjs tests/calendario.test.mjs`).
 - `tools/servidor-local.mjs`: experimentar localmente em modo demonstração (`node tools/servidor-local.mjs`, depois abrir http://localhost:8787).
 - `GUIA-CLOUDFLARE.md`: como publicar e configurar.
 
