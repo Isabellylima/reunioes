@@ -410,6 +410,62 @@ test('Configuração do painel: MICROSOFT_* sem APP_URL nem SESSION_SECRET, com 
   assert.equal((await pedir(env, '/api/me')).status, 401);
 }));
 
+test('Diagnóstico: erro da Microsoft na troca do código mostra o código AADSTS, sem expor código nem segredo', async () => {
+  const original = globalThis.fetch;
+  const registos = [];
+  const erroOriginal = console.error;
+  console.error = (...a) => registos.push(a.join(' '));
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/oauth2/v2.0/token')) {
+      return new Response(JSON.stringify({ error: 'invalid_client', error_description: 'AADSTS7000215: Invalid client secret provided.', error_codes: [7000215], trace_id: 'abcd1234-0000', correlation_id: 'corr-1' }), { status: 401 });
+    }
+    return new Response('{}', { status: 404 });
+  };
+  try {
+    const env = envEntra();
+    const { destino, cookieOauth } = await iniciar(env);
+    const r = await retorno(env, destino, cookieOauth);
+    assert.equal(r.status, 502);
+    const texto = await r.text();
+    assert.match(texto, /AADSTS7000215/);
+    assert.match(texto, /«Value»/);
+    const log = registos.join('\n');
+    assert.match(log, /entra_troca_codigo_falhou/);
+    assert.doesNotMatch(log, /codigo-1|segredo-do-cliente/);   // nem o código de autorização nem o segredo
+  } finally {
+    globalThis.fetch = original;
+    console.error = erroOriginal;
+  }
+});
+
+test('Diagnóstico: segredo com formato de Secret ID é detetado antes de contactar a Microsoft', async () => {
+  const original = globalThis.fetch;
+  let chamouToken = false;
+  globalThis.fetch = async (url) => { if (String(url).endsWith('/token')) chamouToken = true; return new Response('{}'); };
+  const erroOriginal = console.error; console.error = () => {};
+  try {
+    const env = envEntra({ ENTRA_CLIENT_SECRET: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
+    const { destino, cookieOauth } = await iniciar(env);
+    const r = await retorno(env, destino, cookieOauth);
+    assert.match(await r.text(), /Secret ID/);
+    assert.equal(chamouToken, false);
+  } finally { globalThis.fetch = original; console.error = erroOriginal; }
+});
+
+test('Diagnóstico: /auth/diagnostico exige sessão e não mostra o segredo', comHubSpotFalso(async () => {
+  const env = { ...envEntra({ ENTRA_CLIENT_SECRET: ' segredo-com-espaco\n' }), ACCESS_TEAM_DOMAIN: EQUIPA, ACCESS_AUD: AUD };
+  assert.equal((await pedir(env, '/auth/diagnostico')).status, 401);
+  const r = await pedir(env, '/auth/diagnostico', { headers: { 'Cf-Access-Jwt-Assertion': await jwt({ email: 'ana.teste@fercopor.pt' }) } });
+  assert.equal(r.status, 200);
+  const texto = await r.text();
+  assert.doesNotMatch(texto, /segredo-com-espaco/);
+  const d = JSON.parse(texto);
+  assert.equal(d.clientSecretPresente, true);
+  assert.equal(d.clientSecretTinhaEspacos, true);
+  assert.equal(d.redirectUri, `${URL_APP}/auth/retorno`);
+  assert.equal(d.tenantIdEGuid, true);
+}));
+
 test('Entra: configuração incompleta → 503 (nunca abre sem login)', async () => {
   const r = await pedir({ ENTRA_TENANT_ID: TENANT, ASSETS: { fetch: async () => new Response('x') } }, '/');
   assert.equal(r.status, 503);

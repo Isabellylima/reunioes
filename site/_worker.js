@@ -94,8 +94,11 @@ async function normalizarConfiguracao(env, request) {
   e.ENTRA_TENANT_ID = env.ENTRA_TENANT_ID || env.MICROSOFT_TENANT_ID;
   e.ENTRA_CLIENT_ID = env.ENTRA_CLIENT_ID || env.MICROSOFT_CLIENT_ID;
   e.ENTRA_CLIENT_SECRET = env.ENTRA_CLIENT_SECRET || env.MICROSOFT_CLIENT_SECRET;
-  if (e.ENTRA_TENANT_ID) e.ENTRA_TENANT_ID = String(e.ENTRA_TENANT_ID).trim();
-  if (e.ENTRA_CLIENT_ID) e.ENTRA_CLIENT_ID = String(e.ENTRA_CLIENT_ID).trim();
+  // Espaços ou quebras de linha coladas por engano tornam o segredo inválido (AADSTS7000215)
+  e._diagSegredoComEspacos = Boolean(e.ENTRA_CLIENT_SECRET && String(e.ENTRA_CLIENT_SECRET) !== String(e.ENTRA_CLIENT_SECRET).trim());
+  for (const k of ['ENTRA_TENANT_ID', 'ENTRA_CLIENT_ID', 'ENTRA_CLIENT_SECRET']) if (e[k]) e[k] = String(e[k]).trim();
+  e._diagAppUrl = env.APP_URL ? 'APP_URL' : 'endereço da app';
+  e._diagSessionSecret = env.SESSION_SECRET ? 'SESSION_SECRET' : 'derivado do client secret';
   if (e.ENTRA_TENANT_ID || e.ENTRA_CLIENT_ID || e.ENTRA_CLIENT_SECRET) {
     if (!e.APP_URL) e.APP_URL = new URL(request.url).origin;
     if (!e.SESSION_SECRET && e.ENTRA_CLIENT_SECRET) {
@@ -118,6 +121,7 @@ async function tratar(request, env) {
     if (caminho === '/auth/entrar' && entraConfigurada(env)) return iniciarLoginMicrosoft(request, env);
     if (caminho === '/auth/retorno' && entraConfigurada(env)) return concluirLoginMicrosoft(request, env);
     if (caminho === '/auth/sair') return terminarSessao(env);
+    if (caminho === '/auth/diagnostico') return diagnosticoLogin(request, env);
     if (caminho === '/style.css' || caminho === '/assets/fercopor-logo.svg') return env.ASSETS.fetch(request);
   }
 
@@ -201,6 +205,21 @@ async function tratar(request, env) {
    O login pede apenas "openid profile email". O acesso ao calendário (Graph) será um
    consentimento SEPARADO e posterior, com tokens guardados à parte (ver SPEC §O).
 */
+
+const PADRAO_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DICAS_AADSTS = {
+  AADSTS7000215: 'O client secret não é válido: confirme que MICROSOFT_CLIENT_SECRET tem o «Value» (não o «Secret ID»), completo e sem espaços.',
+  AADSTS7000222: 'O client secret expirou: crie um novo em Certificates & secrets e atualize MICROSOFT_CLIENT_SECRET.',
+  AADSTS700016: 'A aplicação (MICROSOFT_CLIENT_ID) não existe neste diretório: confirme o Application (client) ID e o tenant.',
+  AADSTS700025: 'A aplicação está a ser tratada como cliente público: o Redirect URI tem de estar na plataforma «Web» (não «SPA» nem «Mobile and desktop»).',
+  AADSTS50011: 'O endereço de retorno não coincide com o registado: use https://reunioes.fercopor.workers.dev/auth/retorno na plataforma Web.',
+  AADSTS500112: 'O endereço de retorno não coincide com o registado.',
+  AADSTS54005: 'O código de autorização já tinha sido usado (página recarregada?). Volte a iniciar sessão.',
+  AADSTS70008: 'O código de autorização expirou. Volte a iniciar sessão.',
+  AADSTS65001: 'Falta consentimento para as permissões: peça à TI «Grant admin consent».',
+  AADSTS90002: 'O tenant indicado em MICROSOFT_TENANT_ID não existe.',
+  AADSTS50194: 'A aplicação não está configurada para este diretório: confirme MICROSOFT_TENANT_ID.',
+};
 
 const COOKIE_SESSAO = '__Host-reunioes_sessao';
 const COOKIE_OAUTH = '__Host-reunioes_oauth';
@@ -312,6 +331,11 @@ async function concluirLoginMicrosoft(request, env) {
     return paginaEntrada(env, 'O pedido de início de sessão expirou ou é inválido. Tente novamente.', 400, limpar);
   }
 
+  if (PADRAO_GUID.test(env.ENTRA_CLIENT_SECRET)) {
+    console.error(JSON.stringify({ evento: 'entra_segredo_parece_secret_id' }));
+    return paginaEntrada(env, 'MICROSOFT_CLIENT_SECRET contém o «Secret ID» (formato de GUID) em vez do «Value» do segredo. Em Entra ID › Certificates & secrets, copie a coluna «Value».', 503, limpar);
+  }
+
   const r = await fetch(`https://login.microsoftonline.com/${env.ENTRA_TENANT_ID}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -326,8 +350,18 @@ async function concluirLoginMicrosoft(request, env) {
     }).toString(),
   });
   if (!r.ok) {
-    console.error('Entra token', r.status, (await r.text()).slice(0, 300));
-    return paginaEntrada(env, 'A Microsoft não confirmou o início de sessão. Tente novamente.', 502, limpar);
+    // Só campos de diagnóstico da resposta de erro da Microsoft (nunca o código, tokens ou segredos)
+    let erro = {};
+    try { erro = await r.json(); } catch { /* resposta sem JSON */ }
+    const codigoAad = (String(erro.error_description || '').match(/AADSTS\d+/) || [])[0]
+      || (Array.isArray(erro.error_codes) && erro.error_codes[0] ? `AADSTS${erro.error_codes[0]}` : '');
+    console.error(JSON.stringify({
+      evento: 'entra_troca_codigo_falhou', http: r.status, erro: erro.error || '', codigo: codigoAad,
+      trace_id: erro.trace_id || '', correlation_id: erro.correlation_id || '', redirect_uri: enderecoRetorno(env),
+    }));
+    const dica = DICAS_AADSTS[codigoAad] || 'Verifique o registo da aplicação no Entra ID.';
+    const ref = [codigoAad || erro.error || `HTTP ${r.status}`, erro.trace_id ? `rastreio ${String(erro.trace_id).slice(0, 8)}` : ''].filter(Boolean).join(' · ');
+    return paginaEntrada(env, `A Microsoft não confirmou o início de sessão (${ref}). ${dica}`, 502, limpar);
   }
   const resposta = await r.json();
   let dados;
@@ -349,6 +383,32 @@ async function concluirLoginMicrosoft(request, env) {
   cabecalhos.append('Set-Cookie', cookie(COOKIE_SESSAO, sessao, horas * 3600));
   cabecalhos.append('Set-Cookie', limpar);
   return new Response(null, { status: 302, headers: cabecalhos });
+}
+
+// Diagnóstico da configuração do login, sem valores secretos. Só para quem já tem sessão (Access ou Microsoft).
+async function diagnosticoLogin(request, env) {
+  const temAccess = Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD && request.headers.get('Cf-Access-Jwt-Assertion'));
+  let autorizado = false;
+  if (temAccess) {
+    try { await verificarJwtAccess(request.headers.get('Cf-Access-Jwt-Assertion'), env); autorizado = true; } catch { /* inválido */ }
+  }
+  if (!autorizado && env.SESSION_SECRET && await lerCookieAssinado(request, env, COOKIE_SESSAO)) autorizado = true;
+  if (!autorizado) throw new ErroHttp(401, 'Diagnóstico só com sessão iniciada.');
+  const segredo = String(env.ENTRA_CLIENT_SECRET || '');
+  return json({
+    tenantId: env.ENTRA_TENANT_ID || null,
+    tenantIdEGuid: PADRAO_GUID.test(String(env.ENTRA_TENANT_ID || '')),
+    clientId: env.ENTRA_CLIENT_ID || null,
+    clientIdEGuid: PADRAO_GUID.test(String(env.ENTRA_CLIENT_ID || '')),
+    clientSecretPresente: Boolean(segredo),
+    clientSecretPareceSecretId: PADRAO_GUID.test(segredo),
+    clientSecretTinhaEspacos: Boolean(env._diagSegredoComEspacos),
+    redirectUri: env.ENTRA_TENANT_ID ? enderecoRetorno(env) : null,
+    origemAppUrl: env._diagAppUrl || null,
+    origemSessionSecret: env._diagSessionSecret || null,
+    accessAtivo: Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD),
+    authMode: env.AUTH_MODE || 'transição (Access + Microsoft)',
+  });
 }
 
 function terminarSessao(env) {

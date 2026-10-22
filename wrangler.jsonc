@@ -12,6 +12,8 @@
   },
   // Mantém as variáveis e segredos definidos no painel do Cloudflare em cada publicação.
   "keep_vars": true,
+  // Registos persistentes (Workers Logs): permitem ver os erros de diagnóstico do login no painel.
+  "observability": { "enabled": true },
   // Armazenamento: lista de utilizadores, anti-duplicação e auditoria (namespace "fercopor-reunioes").
   "kv_namespaces": [{ "binding": "REUNIOES_KV", "id": "3f79433b0c0641109f4fb95da8e40735" }],
   // Login com Cloudflare Access (valores públicos, não são segredos).
