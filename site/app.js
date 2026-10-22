@@ -146,8 +146,12 @@
         <p class="subtitulo">Ligue o seu calendário para ver conflitos de horário e criar os eventos Outlook/Teams.${simulacao}</p>
         <a class="botao botao-microsoft" href="/auth/calendario/ligar">Ligar o meu calendário Outlook</a></section>`;
     }
+    const v = estado.verificacao;
+    const resultado = v ? (v.erro ? `<p class="nota">${esc(v.erro)}</p>` : `<p class="nota">Conta: ${esc(v.contaMicrosoft)} ${v.contaCorrespondeSessao ? '✓' : '✗ diferente da sessão'} · Criar eventos: ${v.podeCriarEventos ? '✓' : '✗'} · Teams: ${v.teamsDisponivel ? '✓' : '✗ não disponível'} · Permissões: ${esc((v.ambitosAutorizados || []).join(', ') || '—')}</p>`) : '';
     return `<section class="detalhe"><h2 class="cab-calendario">Calendário Outlook ligado</h2>
       <p class="subtitulo">A app consulta a sua disponibilidade e cria os eventos que pedir.${simulacao}</p>
+      ${c.modo === 'real' ? '<button type="button" class="botao" data-acao="verificar-calendario">Verificar ligação (sem criar eventos)</button>' : ''}
+      ${resultado}
       <button type="button" class="botao-texto" data-acao="desligar-calendario">Desligar o calendário</button></section>`;
   }
 
@@ -602,6 +606,11 @@
           await guardarResultado(alvo.dataset.id, 'SCHEDULED', 'Resultado anulado na app');
           delete classificadas[alvo.dataset.id];
           atualizarContadorPendentes();
+          return desenhar();
+        }
+        case 'verificar-calendario': {
+          alvo.disabled = true;
+          try { estado.verificacao = await api('/api/calendario/verificar'); } catch (e) { estado.verificacao = { erro: e.message }; }
           return desenhar();
         }
         case 'desligar-calendario': {

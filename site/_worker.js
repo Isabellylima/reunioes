@@ -166,6 +166,9 @@ async function tratar(request, env) {
     const fim = Date.parse(url.searchParams.get('fim') || '');
     return json(await disponibilidade(env, utilizador, inicio, fim));
   }
+  if (m === 'GET' && caminho === '/api/calendario/verificar') {
+    return json(await verificarCalendario(env, utilizador));
+  }
   if (m === 'POST' && caminho === '/api/calendario/desligar') {
     return desligarCalendario(env, utilizador);
   }
@@ -1120,7 +1123,9 @@ async function estadoCalendario(env, utilizador) {
   const modo = modoCalendario(env, utilizador.email);
   if (modo === 'desligado') return { modo, ligado: false };
   const guardado = env.REUNIOES_KV ? await env.REUNIOES_KV.get(`cal:${utilizador.email}`, 'json') : null;
-  return { modo, ligado: Boolean(guardado && (guardado.rt || guardado.simulado)) };
+  // Em modo real só conta uma autorização real (token); a marca da simulação não serve
+  const ligado = modo === 'real' ? Boolean(guardado && guardado.rt) : Boolean(guardado && (guardado.rt || guardado.simulado));
+  return { modo, ligado, ambitos: (modo === 'real' && guardado && guardado.ambitos) || null };
 }
 
 /* --- Consentimento --- */
@@ -1151,6 +1156,9 @@ async function iniciarLigacaoCalendario(env, utilizador) {
 
 // Chamado por /auth/retorno quando o pedido temporário é do tipo «cal»
 async function concluirLigacaoCalendario(request, env, temporario, codigo, limpar) {
+  if (modoCalendario(env, temporario.e) !== 'real') {
+    return paginaEntrada(env, 'A ligação real ao calendário não está autorizada para esta conta.', 403, limpar);
+  }
   const sessao = await lerCookieAssinado(request, env, COOKIE_SESSAO);
   if (!sessao || String(sessao.e).toLowerCase() !== temporario.e) {
     return paginaEntrada(env, 'Sessão em falta ou diferente: volte a iniciar sessão e a ligar o calendário.', 401, limpar);
@@ -1166,11 +1174,34 @@ async function concluirLigacaoCalendario(request, env, temporario, codigo, limpa
     return paginaEntrada(env, 'A conta Microsoft autorizada não é a mesma da sessão. Nada foi guardado.', 403, limpar);
   }
   if (!tokens.dados.refresh_token) return paginaEntrada(env, 'A Microsoft não devolveu a autorização permanente (offline_access).', 502, limpar);
-  await env.REUNIOES_KV.put(`cal:${temporario.e}`, JSON.stringify({ rt: await cifrar(env, tokens.dados.refresh_token), atualizado: Date.now(), oid: perfil.id || '' }));
+  await env.REUNIOES_KV.put(`cal:${temporario.e}`, JSON.stringify({
+    rt: await cifrar(env, tokens.dados.refresh_token), atualizado: Date.now(), oid: perfil.id || '', conta: emailGraph,
+    ambitos: String(tokens.dados.scope || '').split(' ').filter(Boolean).map((a) => a.replace(/^https:\/\/graph\.microsoft\.com\//, '')),
+  }));
   acessosGraph.delete(temporario.e);
   const h = new Headers({ Location: '/#/inicio', 'Cache-Control': 'no-store' });
   h.append('Set-Cookie', limpar);
   return new Response(null, { status: 302, headers: h });
+}
+
+// Verificação SÓ DE LEITURA da ligação real: conta, permissão de escrita no calendário e Teams disponível.
+async function verificarCalendario(env, utilizador) {
+  if (modoCalendario(env, utilizador.email) !== 'real') return { modo: modoCalendario(env, utilizador.email), verificado: false };
+  const registo = env.REUNIOES_KV ? await env.REUNIOES_KV.get(`cal:${utilizador.email}`, 'json') : null;
+  const eu = await graph(env, utilizador.email, 'GET', '/me?$select=mail,userPrincipalName');
+  const cal = await graph(env, utilizador.email, 'GET', '/me/calendar?$select=name,canEdit,allowedOnlineMeetingProviders,defaultOnlineMeetingProvider');
+  const conta = String(eu.mail || eu.userPrincipalName || '').toLowerCase();
+  const fornecedores = cal.allowedOnlineMeetingProviders || [];
+  return {
+    modo: 'real',
+    verificado: true,
+    contaMicrosoft: conta,
+    contaCorrespondeSessao: conta === utilizador.email,
+    podeCriarEventos: cal.canEdit === true,
+    teamsDisponivel: fornecedores.includes('teamsForBusiness'),
+    fornecedoresReuniaoOnline: fornecedores,
+    ambitosAutorizados: (registo && registo.ambitos) || [],
+  };
 }
 
 async function desligarCalendario(env, utilizador) {
@@ -1222,6 +1253,10 @@ async function acessoGraph(env, email) {
 }
 
 async function graph(env, email, metodo, caminho, corpo) {
+  // Segunda barreira: nenhuma chamada real ao Graph fora de CALENDAR_MODE=real e de CALENDAR_TEST_EMAILS
+  if (modoCalendario(env, email) !== 'real') {
+    throw new ErroHttp(403, 'Integração real com o Outlook não autorizada para este utilizador.');
+  }
   const r = await fetch(GRAPH + caminho, {
     method: metodo,
     headers: { Authorization: `Bearer ${await acessoGraph(env, email)}`, 'Content-Type': 'application/json', Prefer: 'outlook.timezone="UTC"' },

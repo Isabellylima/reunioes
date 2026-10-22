@@ -152,7 +152,7 @@ test('Simulação: ligar, disponibilidade, criar com Teams, reprogramar — sem 
     const sessao = await entrar(env, ms);
     const h = { Cookie: sessao };
     let me = await (await pedir(env, '/api/me', { headers: h })).json();
-    assert.deepEqual(me.calendario, { modo: 'simulacao', ligado: false });
+    assert.deepEqual(me.calendario, { modo: 'simulacao', ligado: false, ambitos: null });
     assert.equal((await pedir(env, '/auth/calendario/ligar', { headers: h })).status, 302);
     me = await (await pedir(env, '/api/me', { headers: h })).json();
     assert.equal(me.calendario.ligado, true);
@@ -283,6 +283,85 @@ test('Real: sem calendário ligado, pedir o evento devolve aviso e a reunião é
     assert.equal(outlook.estado, 'falhou');
     assert.match(outlook.erro, /não está ligado/);
   } finally { ms.repor(); }
+});
+
+/* ---------- Restrição a CALENDAR_TEST_EMAILS e identidade ---------- */
+
+test('Restrição: a marca da simulação não conta como calendário ligado em modo real', async () => {
+  const ms = microsoftSimulada();
+  try {
+    const kv = kvMemoria({ utilizadores: JSON.stringify([{ email: ANA }]) });
+    const sim = envBase({ CALENDAR_MODE: 'simulacao', REUNIOES_KV: kv });
+    const sessao = await entrar(sim, ms);
+    await pedir(sim, '/auth/calendario/ligar', { headers: { Cookie: sessao } });
+    assert.equal((await (await pedir(sim, '/api/me', { headers: { Cookie: sessao } })).json()).calendario.ligado, true);
+    const real = envBase({ CALENDAR_MODE: 'real', CALENDAR_TEST_EMAILS: ANA, REUNIOES_KV: kv });
+    const me = await (await pedir(real, '/api/me', { headers: { Cookie: sessao } })).json();
+    assert.deepEqual([me.calendario.modo, me.calendario.ligado], ['real', false]);
+  } finally { ms.repor(); }
+});
+
+test('Restrição: com uma autorização guardada mas fora de CALENDAR_TEST_EMAILS, nenhuma chamada real ao Graph', async () => {
+  const ms = microsoftSimulada();
+  try {
+    const env = envBase({ CALENDAR_MODE: 'real', CALENDAR_TEST_EMAILS: ANA });
+    const sessao = await entrar(env, ms);
+    await ligarCalendario(env, sessao);   // a Ana autoriza
+    const fora = { ...env, CALENDAR_TEST_EMAILS: 'outra.pessoa@fercopor.pt' };   // a Ana deixa de estar na lista
+    ms.chamadas.length = 0;
+    const r = await pedir(fora, '/api/reunioes', { method: 'POST', body: novaReuniao({ outlook: true }), headers: { Cookie: sessao, 'Idempotency-Key': 'fora-0001-abcdefghij' } });
+    assert.equal((await r.json()).outlook.estado, 'simulado');
+    await pedir(fora, '/api/calendario/disponibilidade?inicio=2026-11-10T10:30:00Z&fim=2026-11-10T11:30:00Z', { headers: { Cookie: sessao } });
+    await pedir(fora, '/api/calendario/verificar', { headers: { Cookie: sessao } });
+    assert.ok(!ms.chamadas.some((c) => c.includes('graph.microsoft.com')), 'nenhuma chamada ao Graph');
+  } finally { ms.repor(); }
+});
+
+test('Restrição: o retorno do consentimento recusa quem saiu da lista entretanto', async () => {
+  const ms = microsoftSimulada();
+  try {
+    const env = envBase({ CALENDAR_MODE: 'real', CALENDAR_TEST_EMAILS: ANA });
+    const sessao = await entrar(env, ms);
+    const r1 = await pedir(env, '/auth/calendario/ligar', { headers: { Cookie: sessao } });
+    const destino = new URL(r1.headers.get('Location'));
+    const fora = { ...env, CALENDAR_TEST_EMAILS: 'outra.pessoa@fercopor.pt' };
+    const r2 = await pedir(fora, `/auth/retorno?code=c2&state=${destino.searchParams.get('state')}`, { headers: { Cookie: `${sessao}; ${cookiesDe(r1)}` } });
+    assert.equal(r2.status, 403);
+    assert.equal(env.REUNIOES_KV._m.get(`cal:${ANA}`), undefined);
+  } finally { ms.repor(); }
+});
+
+test('Restrição: a identidade vem da sessão no servidor — um e-mail no pedido não muda nada', async () => {
+  const ms = microsoftSimulada();
+  try {
+    const env = envBase({ CALENDAR_MODE: 'real', CALENDAR_TEST_EMAILS: 'bruno.teste@fercopor.pt' });
+    const sessao = await entrar(env, ms);   // sessão da Ana
+    const r = await pedir(env, '/api/reunioes', { method: 'POST', body: novaReuniao({ outlook: true, email: 'bruno.teste@fercopor.pt' }), headers: { Cookie: sessao, 'Idempotency-Key': 'ident-0001-abcdefgh', 'X-User-Email': 'bruno.teste@fercopor.pt' } });
+    assert.equal((await r.json()).outlook.estado, 'simulado');
+    assert.ok(!ms.chamadas.some((c) => c.includes('graph.microsoft.com')));
+  } finally { ms.repor(); }
+});
+
+test('Verificação só de leitura: conta, permissão de escrita e Teams, sem criar eventos', async () => {
+  const ms = microsoftSimulada();
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, op) => {
+    if (String(url).startsWith('https://graph.microsoft.com/v1.0/me/calendar?')) {
+      return new Response(JSON.stringify({ name: 'Calendário', canEdit: true, allowedOnlineMeetingProviders: ['teamsForBusiness'], defaultOnlineMeetingProvider: 'teamsForBusiness' }));
+    }
+    return original(url, op);
+  };
+  try {
+    const env = envBase({ CALENDAR_MODE: 'real', CALENDAR_TEST_EMAILS: ANA });
+    const sessao = await entrar(env, ms);
+    await ligarCalendario(env, sessao);
+    const v = await (await pedir(env, '/api/calendario/verificar', { headers: { Cookie: sessao } })).json();
+    assert.equal(v.contaCorrespondeSessao, true);
+    assert.equal(v.podeCriarEventos, true);
+    assert.equal(v.teamsDisponivel, true);
+    assert.equal(ms.eventos.length, 0);
+    assert.ok(!ms.chamadas.some((c) => /^(POST|PATCH|DELETE) https:\/\/graph/.test(c)), 'só leituras ao Graph');
+  } finally { globalThis.fetch = original; ms.repor(); }
 });
 
 /* ---------- Fase 3: duplicados ---------- */
