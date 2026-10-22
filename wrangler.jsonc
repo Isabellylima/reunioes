@@ -1,0 +1,15 @@
+{
+  // Worker "reunioes" no Cloudflare, publicado automaticamente a partir deste repositório (Workers Builds).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reunioes",
+  "main": "site/_worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "site",
+    "binding": "ASSETS",
+    // o servidor corre sempre primeiro: nada é entregue sem sessão válida
+    "run_worker_first": true
+  },
+  // mantém as variáveis definidas no painel do Cloudflare (os segredos são sempre mantidos)
+  "keep_vars": true
+}
