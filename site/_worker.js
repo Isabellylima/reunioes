@@ -70,8 +70,9 @@ const PROPRIEDADES_REUNIAO = [
 ];
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, envOriginal) {
     try {
+      const env = await normalizarConfiguracao(envOriginal, request);
       return comSeguranca(await tratar(request, env));
     } catch (e) {
       if (e instanceof ErroHttp) return comSeguranca(json({ erro: e.message }, e.status));
@@ -83,6 +84,27 @@ export default {
 
 class ErroHttp extends Error {
   constructor(status, message) { super(message); this.status = status; }
+}
+
+/* Aceita os nomes MICROSOFT_* (painel) e ENTRA_* (código); completa o que é opcional:
+   APP_URL     por omissão, o endereço pelo qual a app foi aberta (tem de coincidir com o redirect registado);
+   SESSION_SECRET  por omissão, derivado do client secret (renovar o secret termina as sessões). */
+async function normalizarConfiguracao(env, request) {
+  const e = { ...env };
+  e.ENTRA_TENANT_ID = env.ENTRA_TENANT_ID || env.MICROSOFT_TENANT_ID;
+  e.ENTRA_CLIENT_ID = env.ENTRA_CLIENT_ID || env.MICROSOFT_CLIENT_ID;
+  e.ENTRA_CLIENT_SECRET = env.ENTRA_CLIENT_SECRET || env.MICROSOFT_CLIENT_SECRET;
+  if (e.ENTRA_TENANT_ID) e.ENTRA_TENANT_ID = String(e.ENTRA_TENANT_ID).trim();
+  if (e.ENTRA_CLIENT_ID) e.ENTRA_CLIENT_ID = String(e.ENTRA_CLIENT_ID).trim();
+  if (e.ENTRA_TENANT_ID || e.ENTRA_CLIENT_ID || e.ENTRA_CLIENT_SECRET) {
+    if (!e.APP_URL) e.APP_URL = new URL(request.url).origin;
+    if (!e.SESSION_SECRET && e.ENTRA_CLIENT_SECRET) {
+      const chave = await crypto.subtle.importKey('raw', new TextEncoder().encode(e.ENTRA_CLIENT_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const derivado = await crypto.subtle.sign('HMAC', chave, new TextEncoder().encode('fercopor-reunioes/sessao/v1'));
+      e.SESSION_SECRET = [...new Uint8Array(derivado)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  return e;
 }
 
 /* ---------- Encaminhamento ---------- */

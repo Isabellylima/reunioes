@@ -392,6 +392,24 @@ test('Transição: com Entra e Access, o Access continua a funcionar; com AUTH_M
   assert.equal((await pedir({ ...base, AUTH_MODE: 'entra' }, '/api/me', { headers: h })).status, 401);
 }));
 
+test('Configuração do painel: MICROSOFT_* sem APP_URL nem SESSION_SECRET, com o Access ativo', comMicrosoftFalsa(async () => {
+  const env = {
+    MICROSOFT_TENANT_ID: ` ${TENANT} `, MICROSOFT_CLIENT_ID: CLIENTE, MICROSOFT_CLIENT_SECRET: 'segredo-do-cliente',
+    ACCESS_TEAM_DOMAIN: EQUIPA, ACCESS_AUD: AUD,
+    REUNIOES_KV: kvMemoria({ utilizadores: JSON.stringify([{ email: 'ana.teste@fercopor.pt' }]) }),
+    ASSETS: { fetch: async () => new Response('estático') },
+  };
+  const { destino, cookieOauth } = await iniciar(env);
+  assert.equal(destino.searchParams.get('redirect_uri'), 'https://app.exemplo/auth/retorno');   // APP_URL = endereço da app
+  const r = await retorno(env, destino, cookieOauth);
+  assert.equal(r.status, 302);
+  const me = await pedir(env, '/api/me', { headers: { Cookie: cookiesDe(r) } });
+  assert.equal(me.status, 200);
+  assert.equal((await me.json()).autenticacao, 'microsoft');
+  // sem sessão Microsoft nem Access, a API continua fechada
+  assert.equal((await pedir(env, '/api/me')).status, 401);
+}));
+
 test('Entra: configuração incompleta → 503 (nunca abre sem login)', async () => {
   const r = await pedir({ ENTRA_TENANT_ID: TENANT, ASSETS: { fetch: async () => new Response('x') } }, '/');
   assert.equal(r.status, 503);

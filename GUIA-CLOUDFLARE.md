@@ -92,13 +92,13 @@ A app faz o login Microsoft sozinha (OpenID Connect com PKCE). Pede **apenas** `
 7. Opcional, recomendado: **Grant admin consent for FERCOPOR**, para ninguém ver o ecrã de consentimento.
 
 ### 2. Variáveis no Worker (Settings → Variables and Secrets)
-| Nome | Tipo | Valor |
+| Nome (aceite também com `ENTRA_` em vez de `MICROSOFT_`) | Tipo | Valor |
 |---|---|---|
-| `ENTRA_TENANT_ID` | Text | Directory (tenant) ID |
-| `ENTRA_CLIENT_ID` | Text | Application (client) ID |
-| `ENTRA_CLIENT_SECRET` | **Secret** | o Value do client secret |
-| `SESSION_SECRET` | **Secret** | texto aleatório com 40 ou mais caracteres (gerador de palavras-passe) |
-| `APP_URL` | Text | `https://reunioes.fercopor.workers.dev` |
+| `MICROSOFT_TENANT_ID` | Text | Directory (tenant) ID (FERCOPOR: `756ee2a3-7dc0-460f-a266-cc6738c1bdd7`) |
+| `MICROSOFT_CLIENT_ID` | Text | Application (client) ID |
+| `MICROSOFT_CLIENT_SECRET` | **Secret** | o **Value** do client secret (não o «Secret ID») |
+| `SESSION_SECRET` | Secret, opcional | texto aleatório com 40 ou mais caracteres. Se faltar, deriva-se do client secret: renovar o secret termina as sessões |
+| `APP_URL` | Text, opcional | `https://reunioes.fercopor.workers.dev`. Se faltar, usa-se o endereço pelo qual a app foi aberta |
 
 **Deploy.** O login atual (Cloudflare Access) continua a funcionar enquanto existir. Ninguém perde o acesso.
 
