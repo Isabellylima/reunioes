@@ -26,6 +26,14 @@ Autorizado: desenvolvimento e testes de leitura. **Não** autorizado: escrever n
 3. Arraste a pasta **`site`**, a que contém o `index.html` e o `_worker.js`.
 4. **Deploy**. Até ao Passo 4 o site responde «Configuração em falta». É o comportamento esperado.
 
+## Alternativa: Worker ligado ao GitHub (ex.: `reunioes.<conta>.workers.dev`)
+
+Se o projeto foi criado em **Workers** (e não em Pages), o repositório já inclui o `wrangler.jsonc`, que indica o servidor (`site/_worker.js`) e a pasta da app (`site`). O `site/.assetsignore` impede que o código do servidor seja servido como ficheiro.
+- **Settings → Build:** comando de compilação vazio; comando de publicação `npx wrangler deploy` (o habitual); pasta raiz `/`.
+- **Variáveis e segredos:** em Settings → Variables and Secrets. O `keep_vars` mantém-nos entre publicações.
+- **KV:** crie o namespace e acrescente o seu **id** ao `wrangler.jsonc` (`kv_namespaces`). Uma ligação criada só no painel é retirada na publicação seguinte.
+- **Access:** a aplicação Self-hosted usa o domínio `reunioes.<conta>.workers.dev`.
+
 ## Passo 2: armazenamento (KV)
 
 1. **Workers & Pages → KV → Create namespace**: `fercopor-reunioes`.

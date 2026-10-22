@@ -20,3 +20,7 @@ Interface simplificada para os coordenadores agendarem, consultarem e atualizare
 - Framework preset: **None**
 - Build command: *(vazio)*
 - Build output directory: **`site`**
+
+## Cloudflare Workers ligado a este repositório
+
+O `wrangler.jsonc` publica o Worker `reunioes` com `site/_worker.js` e os ficheiros de `site/`. Sem comando de compilação. Comando de publicação: `npx wrangler deploy`.

@@ -1,0 +1,17 @@
+// Configuração do Worker "reunioes" (Cloudflare Workers ligado ao GitHub).
+// O servidor (site/_worker.js) corre primeiro em TODOS os pedidos e só depois entrega os ficheiros da app.
+{
+  "name": "reunioes",
+  "main": "site/_worker.js",
+  "compatibility_date": "2025-06-01",
+  "workers_dev": true,
+  "assets": {
+    "directory": "site",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  // Mantém as variáveis e segredos definidos no painel do Cloudflare em cada publicação.
+  "keep_vars": true
+  // KV: depois de criar o namespace, acrescentar aqui (o id não é secreto):
+  // "kv_namespaces": [{ "binding": "REUNIOES_KV", "id": "<id do namespace>" }]
+}
