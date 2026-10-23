@@ -472,7 +472,7 @@ function paginaEntrada(env, mensagem, status = 200, cabecalhosExtra) {
   const html = `<!doctype html>
 <html lang="pt-PT"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#202020">
-<title>Entrar · Reuniões FERCOPOR</title><link rel="stylesheet" href="/style.css"></head>
+<title>FERCOPOR · Reuniões</title><link rel="stylesheet" href="/style.css"></head>
 <body class="pagina-entrada">
 <main class="entrada-ecra">
   <section class="entrada-marca" aria-label="FERCOPOR Reuniões">
