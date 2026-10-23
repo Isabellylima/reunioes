@@ -33,6 +33,10 @@
   const paraIso = (data, h) => new Date(`${data}T${h}`).toISOString();
   const chaveNova = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2, 18));
   const podeEscrever = () => estado.eu && estado.eu.escritaAtiva;
+  // Links para o HubSpot, Outlook e Teams: no computador abrem num separador novo; no telemóvel abrem diretamente,
+  // para o iOS/Android os poderem entregar à app instalada (com um separador novo ficam no browser).
+  const ecraTatil = () => { try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; } };
+  const alvoExterno = () => (ecraTatil() ? ' rel="noopener noreferrer"' : ' target="_blank" rel="noopener noreferrer"');
 
   async function api(caminho, opcoes = {}) {
     const r = await fetch(caminho, {
@@ -108,7 +112,7 @@
 
   function cartaoOutlook(e) {
     const horas = e.diaInteiro ? '<strong>Dia</strong><span>inteiro</span>' : `<strong>${esc(hora(e.inicio))}</strong><span>${esc(hora(e.fim))}</span>`;
-    const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+    const destino = e.ligacao ? ` href="${esc(e.ligacao)}"${alvoExterno()}` : '';
     const tag = e.ligacao ? 'a' : 'div';
     return `<${tag} class="cartao outlook"${destino}>
       <div class="horas">${horas}</div>
@@ -167,11 +171,11 @@
   const diasDeAtraso = (iso, hoje) => Math.round((Date.parse(hoje) - Date.parse(iso)) / 864e5);
 
   function ligacaoContacto(c) {
-    return c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.nome)}</a>` : `<span>${esc(c.nome)}</span>`;
+    return c.url ? `<a href="${esc(c.url)}"${alvoExterno()}>${esc(c.nome)}</a>` : `<span>${esc(c.nome)}</span>`;
   }
 
   const TIPOS_TAREFA = { CALL: 'Chamada', EMAIL: 'E-mail', TODO: 'Tarefa', LINKED_IN_CONNECT: 'LinkedIn', LINKED_IN_MESSAGE: 'LinkedIn' };
-  const ligacaoTarefa = (x) => (x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.titulo)}</a>` : `<span>${esc(x.titulo)}</span>`);
+  const ligacaoTarefa = (x) => (x.url ? `<a href="${esc(x.url)}"${alvoExterno()}>${esc(x.titulo)}</a>` : `<span>${esc(x.titulo)}</span>`);
 
   function itensTarefas(painel) {
     const t = painel.tarefas;
@@ -183,7 +187,7 @@
       return `<li class="lembrete"><span class="etiqueta e-atraso">Tarefa em atraso</span>${ligacaoTarefa(x)}<span class="lembrete-meta">${esc(tipo(x))}${x.quando ? ` · prevista a ${esc(fmt(x.quando, { day: '2-digit', month: '2-digit', year: 'numeric' }))} · ${n} ${n === 1 ? 'dia' : 'dias'}` : ''}</span></li>`;
     });
     const resto = t.atrasoTotal - t.atraso.length;
-    if (resto > 0) atraso.push(`<li class="lembrete mais-tarefas">${t.todas ? `<a href="${esc(t.todas)}" target="_blank" rel="noopener noreferrer">Mais ${resto} ${resto === 1 ? 'tarefa' : 'tarefas'} em atraso no HubSpot</a>` : `<span>Mais ${resto} em atraso</span>`}</li>`);
+    if (resto > 0) atraso.push(`<li class="lembrete mais-tarefas">${t.todas ? `<a href="${esc(t.todas)}"${alvoExterno()}>Mais ${resto} ${resto === 1 ? 'tarefa' : 'tarefas'} em atraso no HubSpot</a>` : `<span>Mais ${resto} em atraso</span>`}</li>`);
     return [...hoje, ...atraso];
   }
 
@@ -364,7 +368,7 @@
 
   function linhaAgendaOutlook(e, dia) {
     const tag = e.ligacao ? 'a' : 'div';
-    const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+    const destino = e.ligacao ? ` href="${esc(e.ligacao)}"${alvoExterno()}` : '';
     const passada = e.fim < Date.now();
     if (e.diaInteiro) {
       return `<${tag} class="ag-item ag-dia-inteiro${passada ? ' passada' : ''}"${destino}>
@@ -389,7 +393,7 @@
       if (hFim <= H_INICIO || hIni >= H_FIM) return '';
       const topo = (hIni - H_INICIO) * PX_HORA + 2;
       const altura = Math.max((hFim - hIni) * PX_HORA - 4, 28);
-      const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+      const destino = e.ligacao ? ` href="${esc(e.ligacao)}"${alvoExterno()}` : '';
       const tag = e.ligacao ? 'a' : 'div';
       return `<${tag} class="evento evento-outlook${altura < 44 ? ' curto' : (altura < 76 ? ' medio' : '')}"${destino} data-topo="${topo}" data-altura="${altura}">
         <strong>${esc(hora(e.inicio))}<b class="h-fim">–${esc(hora(e.fim))}</b></strong><span>${esc(e.titulo)}</span><small>Outlook</small>
@@ -619,7 +623,7 @@
   function textoOutlook(o) {
     if (!o || o.estado === 'nao_pedido' || o.estado === 'desligado') return '';
     if (o.estado === 'falhou') return `<span class="nota">Outlook: não foi possível criar o evento (${esc(o.erro || 'erro')}). A reunião está no HubSpot; pode tentar de novo no detalhe da reunião.</span>`;
-    const ligacao = o.ligacao ? ` · <a href="${esc(o.ligacao)}" target="_blank" rel="noopener noreferrer">ligação Teams</a>` : '';
+    const ligacao = o.ligacao ? ` · <a href="${esc(o.ligacao)}"${alvoExterno()}>ligação Teams</a>` : '';
     return `<span>Outlook: ${o.estado === 'simulado' ? 'evento simulado (nada foi criado no Outlook)' : 'evento criado no seu calendário'}${ligacao}</span>`;
   }
 
@@ -722,7 +726,7 @@
         <div class="linhas">
           <span>${esc(maiuscula(diaLongo(m.inicio)))} · ${esc(hora(m.inicio))}–${esc(hora(m.fim))}</span>
           <span>${esc([MODALIDADES[m.modalidade], m.local].filter(Boolean).join(' · ') || 'Modalidade não indicada')}</span>
-          ${m.ligacao ? `<span><a href="${esc(m.ligacao)}" target="_blank" rel="noopener noreferrer">Abrir ligação da reunião</a></span>` : ''}
+          ${m.ligacao ? `<span><a href="${esc(m.ligacao)}"${alvoExterno()}>Abrir ligação da reunião</a></span>` : ''}
           <span>${esc(contactos)}</span>
           <span>Resultado atual: ${chip(m.resultado)}</span>
           ${linhaOutlook}
