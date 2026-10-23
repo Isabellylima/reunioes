@@ -129,9 +129,10 @@ test('2–3. Início: mantém o botão de agendar e o resumo, sem a lista de reu
   const inicio = js.slice(js.indexOf('async function ecraInicio'), js.indexOf('const erroSeccao'));
   assert.match(inicio, /href="#\/agendar">\+ Agendar reunião/);
   assert.doesNotMatch(inicio, /cartoesMisturados|listaAgrupada|Sem reuniões hoje|t-hoje/);
-  const ordem = ['Agendar reunião', '#/lista/hoje', '#/lista/proximas', '#/por-classificar', 'seccaoLembretes(', 'seccaoLeads(', 'seccaoNegocios(', 'seccaoRealizadas('].map((t) => inicio.indexOf(t));
+  const ordem = ['Agendar reunião', '#/lista/hoje', '#/lista/proximas', '#/por-classificar', 'seccaoLembretes(', 'seccaoLeads(', 'seccaoRealizadas(', 'seccaoNegocios('].map((t) => inicio.indexOf(t));
   assert.ok(ordem.every((v, i) => v >= 0 && (i === 0 || v > ordem[i - 1])), `ordem: ${ordem}`);
   assert.match(js, /async function ecraSemana/);   // separadores Semana e Lista continuam
+  for (const v of ['agenda', 'dia', 'semana']) assert.match(js, new RegExp(`data-vista="${v}"`), `vista ${v}`);   // Semana: Agenda, Dia e grelha semanal
   assert.match(js, /data-formulario="agendar"/);
 });
 

@@ -14,7 +14,7 @@
   const H_INICIO = 8, H_FIM = 21, PX_HORA = 56;
 
   const conteudo = document.getElementById('conteudo');
-  const estado = { eu: null, empreendimentos: [], tipologias: [], equipa: [], predefinidos: [], semana: 0, vistaDia: null, separador: 'hoje', pendentes: null };
+  const estado = { eu: null, empreendimentos: [], tipologias: [], equipa: [], predefinidos: [], semana: 0, vista: 'agenda', diaSel: null, separador: 'hoje', pendentes: null };
 
   /* ---------- Utilitários ---------- */
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -156,8 +156,8 @@
       ${painel.falhou ? `<p class="nota">Não foi possível carregar os lembretes e indicadores: ${esc(painel.falhou)}</p>` : `
         ${seccaoLembretes(painel)}
         ${painel.verLeads ? seccaoLeads(painel) : ''}
-        ${seccaoNegocios(painel)}
-        ${seccaoRealizadas(painel)}`}
+        ${seccaoRealizadas(painel)}
+        ${seccaoNegocios(painel)}`}
       ${calendarioPronto() ? '' : blocoCalendario()}
     `;
   }
@@ -283,71 +283,164 @@
     const reunioes = await reunioesEntre(segunda, domingoFim);
     const outlook = await eventosOutlook(segunda, domingoFim, reunioes);
     const doDiaOutlook = (d) => outlook.eventos.filter((e) => e.inicio < somarDias(d, 1).getTime() && e.fim > d.getTime());
+    const doDiaHubSpot = (d) => reunioes.filter((m) => inicioDoDia(m.inicio).getTime() === d.getTime());
     const dias = Array.from({ length: 7 }, (_, i) => somarDias(segunda, i));
     const hojeTxt = inicioDoDia(new Date()).getTime();
-    const titulo = `${fmt(segunda, { day: 'numeric', month: 'long' })} – ${fmt(somarDias(segunda, 6), { day: 'numeric', month: 'long', year: 'numeric' })}`;
+    const indiceHoje = dias.findIndex((d) => d.getTime() === hojeTxt);
+    if (estado.diaSel == null || estado.diaSel < 0 || estado.diaSel > 6) estado.diaSel = indiceHoje >= 0 ? indiceHoje : 0;
+    const vista = estado.vista || 'agenda';
+    const sel = dias[estado.diaSel];
 
-    const barra = `<div class="barra-semana">
-      <div class="navegar">
+    // Cabeçalho como no Outlook: mês, vistas e faixa da semana
+    const mes = maiuscula(fmt(vista === 'agenda' ? segunda : sel, { month: 'long' }));
+    const ano = fmt(sel, { year: 'numeric' });
+    const cab = `<div class="cal-topo">
+      <div class="cal-mes"><h1>${esc(mes)}</h1><span>${esc(ano)}</span></div>
+      <div class="cal-nav">
         <button type="button" class="botao quadrado" data-acao="semana-anterior" aria-label="Semana anterior">‹</button>
-        <button type="button" class="botao quadrado" data-acao="semana-seguinte" aria-label="Semana seguinte">›</button>
         <button type="button" class="botao" data-acao="semana-atual">Hoje</button>
-        <h1>${esc(titulo)}</h1>
+        <button type="button" class="botao quadrado" data-acao="semana-seguinte" aria-label="Semana seguinte">›</button>
       </div>
-      <div class="grupo-vista" role="group" aria-label="Vista">
-        <button type="button" data-acao="vista-dia" aria-pressed="${estado.vistaDia !== null}">Dia</button>
-        <button type="button" data-acao="vista-semana" aria-pressed="${estado.vistaDia === null}">Semana</button>
-      </div>
-    </div>`;
+    </div>
+    <div class="cal-vistas" role="group" aria-label="Vista">
+      <button type="button" data-acao="vista" data-vista="agenda" aria-pressed="${vista === 'agenda'}">Agenda</button>
+      <button type="button" data-acao="vista" data-vista="dia" aria-pressed="${vista === 'dia'}">Dia</button>
+      <button type="button" class="so-computador" data-acao="vista" data-vista="semana" aria-pressed="${vista === 'semana'}">Semana</button>
+    </div>
+    ${vista === 'semana' ? '' : `<div class="cal-faixa" role="tablist" aria-label="Dias da semana">${dias.map((d, i) => {
+      const tem = doDiaHubSpot(d).length + doDiaOutlook(d).length > 0;
+      return `<button type="button" role="tab" data-acao="escolher-dia" data-indice="${i}" aria-selected="${i === estado.diaSel}" class="${d.getTime() === hojeTxt ? 'hoje' : ''}" aria-label="${esc(maiuscula(diaLongo(d)))}">
+        <span>${esc(fmt(d, { weekday: 'narrow' }))}</span><strong>${d.getDate()}</strong><i class="${tem ? 'tem' : ''}"></i></button>`;
+    }).join('')}</div>`}`;
 
-    if (estado.vistaDia !== null) {
-      const dia = dias[estado.vistaDia] || dias[0];
-      const doDia = reunioes.filter((m) => inicioDoDia(m.inicio).getTime() === dia.getTime());
-      const seletor = `<div class="separadores" role="tablist" aria-label="Dia">${dias.map((d, i) => `<button type="button" role="tab" data-acao="escolher-dia" data-indice="${i}" aria-selected="${i === estado.vistaDia}">${esc(maiuscula(diaCurto(d)))}</button>`).join('')}</div>`;
-      const evsDia = doDiaOutlook(dia);
-      return barra + seletor + `<div class="lista-reunioes">${doDia.length || evsDia.length ? cartoesMisturados(doDia, evsDia) : '<p class="vazio">Sem reuniões neste dia.</p>'}</div>` + notaOutlook(outlook);
+    if (vista === 'semana') return cab + grelhaSemana(dias, reunioes, doDiaOutlook, hojeTxt) + notaOutlook(outlook);
+    if (vista === 'dia') return cab + vistaDiaHoras(sel, doDiaHubSpot(sel), doDiaOutlook(sel), hojeTxt) + notaOutlook(outlook);
+
+    // Agenda: os 7 dias por ordem, com «Hoje», «Amanhã» e o dia da semana
+    const nomeDia = (d) => {
+      const dif = Math.round((d.getTime() - hojeTxt) / 864e5);
+      if (dif === 0) return 'Hoje';
+      if (dif === 1) return 'Amanhã';
+      if (dif === -1) return 'Ontem';
+      return fmt(d, { weekday: 'long' });
+    };
+    const grupos = dias.map((d, i) => {
+      const itens = [
+        ...doDiaOutlook(d).filter((e) => e.diaInteiro).map((e) => ({ t: -1, html: linhaAgendaOutlook(e, d) })),
+        ...doDiaHubSpot(d).map((m) => ({ t: m.inicio, html: linhaAgendaReuniao(m) })),
+        ...doDiaOutlook(d).filter((e) => !e.diaInteiro).map((e) => ({ t: e.inicio, html: linhaAgendaOutlook(e, d) })),
+      ].sort((a, b) => a.t - b.t).map((x) => x.html).join('');
+      return `<section class="ag-dia${d.getTime() === hojeTxt ? ' hoje' : ''}" id="dia-${i}" aria-label="${esc(maiuscula(diaLongo(d)))}">
+        <h2><strong>${esc(fmt(d, { day: '2-digit', month: '2-digit' }))}</strong><span>${esc(nomeDia(d))}</span></h2>
+        ${itens || '<div class="ag-vazio"><i></i><span class="so-leitor">Sem reuniões</span></div>'}
+      </section>`;
+    }).join('');
+    return cab + `<div class="agenda">${grupos}</div>` + notaOutlook(outlook);
+  }
+
+  const duracao = (ini, fim) => {
+    const min = Math.max(0, Math.round((fim - ini) / 6e4));
+    if (min < 60) return `${min}min`;
+    const h = Math.floor(min / 60), r = min % 60;
+    return r ? `${h}h ${r}min` : `${h}h`;
+  };
+  const subtituloReuniao = (m) => {
+    if (m.modalidade === 'online') return 'Reunião do Microsoft Teams';
+    if (m.local) return m.local;
+    return MODALIDADES[m.modalidade] || '';
+  };
+
+  function linhaAgendaReuniao(m) {
+    const pendente = m.fim < Date.now() && (!m.resultado || m.resultado === 'SCHEDULED');
+    const passada = m.fim < Date.now();
+    const estadoTxt = pendente ? '<span class="chip r-VAZIO">Por classificar</span>' : (m.resultado && m.resultado !== 'SCHEDULED' ? chip(m.resultado) : '');
+    const sub = [m.tipo ? m.tipo.replace('Reunião ', '') : 'Sem tipo', subtituloReuniao(m)].filter(Boolean).join(' · ');
+    return `<a class="ag-item ${CLASSE_TIPO[m.tipo] || 'tipo-outro'}${passada ? ' passada' : ''}" href="#/reuniao/${esc(m.id)}">
+      <span class="ag-hora"><strong>${esc(hora(m.inicio))}</strong><small>${esc(duracao(m.inicio, m.fim))}</small></span>
+      <span class="ag-barra" aria-hidden="true"></span>
+      <span class="ag-texto"><strong>${esc(m.titulo)}</strong><small>${esc(sub)}</small>${estadoTxt}</span>
+    </a>`;
+  }
+
+  function linhaAgendaOutlook(e, dia) {
+    const tag = e.ligacao ? 'a' : 'div';
+    const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+    const passada = e.fim < Date.now();
+    if (e.diaInteiro) {
+      return `<${tag} class="ag-item ag-dia-inteiro${passada ? ' passada' : ''}"${destino}>
+        <span class="ag-hora"><small>Dia inteiro</small></span>
+        <span class="ag-texto"><strong>${esc(e.titulo)}</strong><small>Outlook</small></span>
+      </${tag}>`;
     }
+    const ini = Math.max(e.inicio, dia.getTime());
+    return `<${tag} class="ag-item ag-outlook${passada ? ' passada' : ''}"${destino}>
+      <span class="ag-hora"><strong>${esc(hora(ini))}</strong><small>${esc(duracao(e.inicio, e.fim))}</small></span>
+      <span class="ag-barra" aria-hidden="true"></span>
+      <span class="ag-texto"><strong>${esc(e.titulo)}</strong><small>${esc(e.local || 'Outlook')}</small></span>
+    </${tag}>`;
+  }
 
+  // Blocos posicionados numa coluna de horas (Dia e Semana)
+  function blocosDoDia(d, doDia, eventos) {
+    const deOutlook = eventos.filter((e) => !e.diaInteiro).map((e) => {
+      const ini = new Date(Math.max(e.inicio, d.getTime())), fim = new Date(Math.min(e.fim, somarDias(d, 1).getTime()));
+      const hIni = Math.max(ini.getHours() + ini.getMinutes() / 60, H_INICIO);
+      const hFim = Math.min(fim.getHours() + fim.getMinutes() / 60 || 24, H_FIM);
+      if (hFim <= H_INICIO || hIni >= H_FIM) return '';
+      const topo = (hIni - H_INICIO) * PX_HORA + 2;
+      const altura = Math.max((hFim - hIni) * PX_HORA - 4, 28);
+      const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+      const tag = e.ligacao ? 'a' : 'div';
+      return `<${tag} class="evento evento-outlook${altura < 44 ? ' curto' : (altura < 76 ? ' medio' : '')}"${destino} data-topo="${topo}" data-altura="${altura}">
+        <strong>${esc(hora(e.inicio))}<b class="h-fim">–${esc(hora(e.fim))}</b></strong><span>${esc(e.titulo)}</span><small>Outlook</small>
+      </${tag}>`;
+    }).join('');
+    const evs = doDia.map((m) => {
+      const ini = new Date(m.inicio), fim = new Date(m.fim);
+      const hIni = Math.max(ini.getHours() + ini.getMinutes() / 60, H_INICIO);
+      const hFim = Math.min(fim.getHours() + fim.getMinutes() / 60 || 24, H_FIM);
+      const topo = (hIni - H_INICIO) * PX_HORA + 2;
+      const altura = Math.max((hFim - hIni) * PX_HORA - 4, 40);
+      const pendente = m.fim < Date.now() && (!m.resultado || m.resultado === 'SCHEDULED');
+      const quem = m.titulo.replace(/^FERCOPOR \| /, '');
+      return `<a class="evento ${CLASSE_TIPO[m.tipo] || 'tipo-outro'}${pendente ? ' pendente' : ''}${altura < 44 ? ' curto' : (altura < 76 ? ' medio' : '')}" href="#/reuniao/${esc(m.id)}" data-topo="${topo}" data-altura="${altura}">
+        <strong>${esc(hora(m.inicio))}<b class="h-fim">–${esc(hora(m.fim))}</b></strong><span>${esc(quem)}</span><small>${esc([m.tipo ? m.tipo.replace('Reunião ', '') : 'Sem tipo', MODALIDADES[m.modalidade]].filter(Boolean).join(' · '))}${pendente ? ' · por classificar' : ''}</small>
+      </a>`;
+    }).join('');
+    return deOutlook + evs;
+  }
+
+  function linhaAgora(d, hojeTxt) {
+    if (d.getTime() !== hojeTxt) return '';
+    const agora = new Date();
+    const h = agora.getHours() + agora.getMinutes() / 60;
+    if (h < H_INICIO || h > H_FIM) return '';
+    return `<span class="linha-agora" data-topo="${Math.round((h - H_INICIO) * PX_HORA)}" aria-hidden="true"></span>`;
+  }
+
+  function vistaDiaHoras(d, doDia, eventos, hojeTxt) {
+    const diaInteiro = eventos.filter((e) => e.diaInteiro).map((e) => `<div class="ag-item ag-dia-inteiro"><span class="ag-hora"><small>Dia inteiro</small></span><span class="ag-texto"><strong>${esc(e.titulo)}</strong><small>Outlook</small></span></div>`).join('');
+    const horas = Array.from({ length: H_FIM - H_INICIO }, (_, i) => `<span class="hora" data-topo="${i * PX_HORA + 4}">${doisDigitos(H_INICIO + i)}:00</span>`).join('');
+    return `<h2 class="cal-dia-titulo">${esc(maiuscula(diaLongo(d)))}</h2>
+      ${diaInteiro ? `<div class="agenda">${diaInteiro}</div>` : ''}
+      <div class="calendario cal-dia"><div class="grelha-dia"><div class="coluna-horas">${horas}</div>
+        <div class="coluna-dia${d.getTime() === hojeTxt ? ' hoje' : ''}">${blocosDoDia(d, doDia, eventos)}${linhaAgora(d, hojeTxt)}</div>
+      </div></div>
+      ${!doDia.length && !eventos.length ? '<p class="vazio">Sem reuniões neste dia.</p>' : ''}`;
+  }
+
+  function grelhaSemana(dias, reunioes, doDiaOutlook, hojeTxt) {
     const cabecalhos = dias.map((d) => {
       const diaInteiro = doDiaOutlook(d).filter((e) => e.diaInteiro).map((e) => `<small class="dia-inteiro">${esc(e.titulo)}</small>`).join('');
       return `<div class="cab-dia${d.getTime() === hojeTxt ? ' hoje' : ''}"><span>${esc(fmt(d, { weekday: 'short' }).replace('.', ''))}</span><strong>${d.getDate()}</strong>${diaInteiro}</div>`;
     }).join('');
     const horas = Array.from({ length: H_FIM - H_INICIO }, (_, i) => `<span class="hora" data-topo="${i * PX_HORA + 4}">${doisDigitos(H_INICIO + i)}:00</span>`).join('');
-    const colunas = dias.map((d) => {
-      // Eventos Outlook por baixo das reuniões do HubSpot (as reuniões são desenhadas depois e ficam por cima)
-      const deOutlook = doDiaOutlook(d).filter((e) => !e.diaInteiro).map((e) => {
-        const ini = new Date(Math.max(e.inicio, d.getTime())), fim = new Date(Math.min(e.fim, somarDias(d, 1).getTime()));
-        const hIni = Math.max(ini.getHours() + ini.getMinutes() / 60, H_INICIO);
-        const hFim = Math.min(fim.getHours() + fim.getMinutes() / 60 || 24, H_FIM);
-        if (hFim <= H_INICIO || hIni >= H_FIM) return '';
-        const topo = (hIni - H_INICIO) * PX_HORA + 2;
-        const altura = Math.max((hFim - hIni) * PX_HORA - 4, 28);
-        const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
-        const tag = e.ligacao ? 'a' : 'div';
-        return `<${tag} class="evento evento-outlook"${destino} data-topo="${topo}" data-altura="${altura}">
-          <strong>${esc(hora(e.inicio))}–${esc(hora(e.fim))}</strong><span>${esc(e.titulo)}</span><small>Outlook</small>
-        </${tag}>`;
-      }).join('');
-      const evs = reunioes.filter((m) => inicioDoDia(m.inicio).getTime() === d.getTime()).map((m) => {
-        const ini = new Date(m.inicio), fim = new Date(m.fim);
-        const hIni = Math.max(ini.getHours() + ini.getMinutes() / 60, H_INICIO);
-        const hFim = Math.min(fim.getHours() + fim.getMinutes() / 60 || 24, H_FIM);
-        const topo = (hIni - H_INICIO) * PX_HORA + 2;
-        const altura = Math.max((hFim - hIni) * PX_HORA - 4, 40);
-        const pendente = m.fim < Date.now() && (!m.resultado || m.resultado === 'SCHEDULED');
-        const quem = m.titulo.replace(/^FERCOPOR \| /, '');
-        return `<a class="evento ${CLASSE_TIPO[m.tipo] || 'tipo-outro'}${pendente ? ' pendente' : ''}" href="#/reuniao/${esc(m.id)}" data-topo="${topo}" data-altura="${altura}">
-          <strong>${esc(hora(m.inicio))}–${esc(hora(m.fim))}</strong><span>${esc(quem)}</span><small>${esc([m.tipo ? m.tipo.replace('Reunião ', '') : 'Sem tipo', MODALIDADES[m.modalidade]].filter(Boolean).join(' · '))}${pendente ? ' · por classificar' : ''}</small>
-        </a>`;
-      }).join('');
-      return `<div class="coluna-dia${d.getTime() === hojeTxt ? ' hoje' : ''}">${deOutlook}${evs}</div>`;
-    }).join('');
+    const colunas = dias.map((d) => `<div class="coluna-dia${d.getTime() === hojeTxt ? ' hoje' : ''}">${blocosDoDia(d, reunioes.filter((m) => inicioDoDia(m.inicio).getTime() === d.getTime()), doDiaOutlook(d))}${linhaAgora(d, hojeTxt)}</div>`).join('');
     const legenda = `<div class="legenda">${TIPOS.map((t) => `<span class="${CLASSE_TIPO[t]}"><i></i>${esc(t)}</span>`).join('')}<span><i class="pendente-legenda"></i>Tracejado: por classificar</span>${calendarioPronto() ? '<span><i class="outlook-legenda"></i>Agenda Outlook</span>' : ''}</div>`;
     const rodape = calendarioPronto()
       ? `Mostra as reuniões do HubSpot e a sua agenda Outlook entre as ${H_INICIO}:00 e as ${H_FIM}:00.`
       : `Mostra as reuniões do HubSpot entre as ${H_INICIO}:00 e as ${H_FIM}:00. Para ver também a agenda Outlook, ligue o calendário em «Gerir sincronização com Microsoft».`;
-    return barra + `<div class="calendario"><div class="grelha-semana"><div></div>${cabecalhos}<div class="coluna-horas">${horas}</div>${colunas}</div></div>` + legenda
-      + notaOutlook(outlook) + `<p class="subtitulo">${rodape}</p>`;
+    return `<div class="calendario"><div class="grelha-semana"><div></div>${cabecalhos}<div class="coluna-horas">${horas}</div>${colunas}</div></div>` + legenda + `<p class="subtitulo">${rodape}</p>`;
   }
 
   /* ---------- Ecrã: lista ---------- */
@@ -745,6 +838,9 @@
     // Posições do calendário aplicadas via CSSOM (permitido pela CSP, ao contrário de style="" no HTML)
     conteudo.querySelectorAll('[data-topo]').forEach((el) => { el.style.top = el.dataset.topo + 'px'; });
     conteudo.querySelectorAll('[data-altura]').forEach((el) => { el.style.height = el.dataset.altura + 'px'; });
+    // Agenda: abre no dia de hoje, como no Outlook
+    const hojeAgenda = conteudo.querySelector('.agenda .ag-dia.hoje');
+    if (hojeAgenda && estado.rolarParaHoje) { estado.rolarParaHoje = false; hojeAgenda.scrollIntoView({ block: 'start' }); }
   }
 
   /* ---------- Eventos ---------- */
@@ -755,12 +851,20 @@
     const f = formulario;
     try {
       switch (acao) {
-        case 'semana-anterior': estado.semana--; return desenhar();
-        case 'semana-seguinte': estado.semana++; return desenhar();
-        case 'semana-atual': estado.semana = 0; return desenhar();
-        case 'vista-dia': estado.vistaDia = (new Date().getDay() + 6) % 7; return desenhar();
-        case 'vista-semana': estado.vistaDia = null; return desenhar();
-        case 'escolher-dia': estado.vistaDia = Number(alvo.dataset.indice); return desenhar();
+        case 'semana-anterior': estado.semana--; estado.diaSel = 0; return desenhar();
+        case 'semana-seguinte': estado.semana++; estado.diaSel = 0; return desenhar();
+        case 'semana-atual': estado.semana = 0; estado.diaSel = null; estado.rolarParaHoje = true; return desenhar();
+        case 'vista': estado.vista = alvo.dataset.vista; return desenhar();
+        case 'escolher-dia': {
+          estado.diaSel = Number(alvo.dataset.indice);
+          if ((estado.vista || 'agenda') === 'agenda') {
+            conteudo.querySelectorAll('.cal-faixa [role="tab"]').forEach((b, i) => b.setAttribute('aria-selected', String(i === estado.diaSel)));
+            const alvoDia = document.getElementById(`dia-${estado.diaSel}`);
+            if (alvoDia) alvoDia.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+          }
+          return desenhar();
+        }
         case 'separador': location.hash = `#/lista/${alvo.dataset.id}`; return;
         case 'modalidade': f.modalidade = alvo.dataset.id; f.local = ''; f.ligacao = ''; return desenhar();
         case 'mais': f.mais = !f.mais; return desenhar();
@@ -912,6 +1016,7 @@
     if (!location.hash.startsWith('#/reuniao/')) detalhe = null;
     if (!location.hash.startsWith('#/agendar') && formulario && formulario.feito) formulario = null;
     if (!location.hash.startsWith('#/por-classificar')) classificadas = {};
+    if (location.hash.startsWith('#/semana')) estado.rolarParaHoje = true;
     desenhar();
     conteudo.focus({ preventScroll: true });
     window.scrollTo(0, 0);
