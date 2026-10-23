@@ -250,8 +250,9 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
   background: var(--tinta); color: var(--creme);
   padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 22px;
 }
-.entrada-marca .marca img { width: 128px; height: 20px; }
-.entrada-chamada h1 { font-size: 24px; line-height: 1.2; font-weight: 800; letter-spacing: -.01em; max-width: 22ch; }
+.entrada-logo { display: flex; flex-direction: column; gap: 10px; }
+.entrada-logo img { display: block; width: 204px; height: 32px; }
+.entrada-logo span { font-size: 12px; font-weight: 600; letter-spacing: .24em; text-transform: uppercase; color: var(--creme); }
 .entrada-pontos { display: none; list-style: none; margin: 28px 0 0; padding: 0; flex-direction: column; gap: 14px; }
 .entrada-pontos li { display: flex; align-items: center; gap: 12px; color: #D9D3C3; font-size: 15px; font-weight: 600; }
 .entrada-pontos svg { flex: none; width: 22px; height: 22px; fill: none; stroke: #B49A55; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -273,8 +274,10 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 @media (min-width: 900px) {
   .entrada-ecra { flex-direction: row; }
   .entrada-marca { flex: 0 0 44%; max-width: 620px; padding: 40px 48px; justify-content: space-between; }
-  .entrada-marca .marca img { width: 153px; height: 24px; }
-  .entrada-chamada h1 { font-size: 34px; }
+  .entrada-chamada { margin: auto 0; }
+  .entrada-logo { gap: 14px; }
+  .entrada-logo img { width: 320px; height: 50px; }
+  .entrada-logo span { font-size: 14px; }
   .entrada-pontos { display: flex; }
   .entrada-rodape { display: block; }
   .entrada-painel { align-items: center; padding: 40px; }

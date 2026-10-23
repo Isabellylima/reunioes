@@ -476,12 +476,8 @@ function paginaEntrada(env, mensagem, status = 200, cabecalhosExtra) {
 <body class="pagina-entrada">
 <main class="entrada-ecra">
   <section class="entrada-marca" aria-label="FERCOPOR Reuniões">
-    <div class="marca">
-      <img src="/assets/fercopor-logo.svg" alt="FERCOPOR" width="153" height="24">
-      <span>Reuniões</span>
-    </div>
     <div class="entrada-chamada">
-      <h1>As suas reuniões comerciais, num só lugar.</h1>
+      <h1 class="entrada-logo"><img src="/assets/fercopor-logo.svg" alt="FERCOPOR" width="153" height="24"><span>Reuniões</span></h1>
       <ul class="entrada-pontos">
         <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Agende e consulte a semana</li>
         <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Classifique o resultado de cada reunião</li>
