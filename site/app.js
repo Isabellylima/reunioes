@@ -170,19 +170,40 @@
     return c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.nome)}</a>` : `<span>${esc(c.nome)}</span>`;
   }
 
+  const TIPOS_TAREFA = { CALL: 'Chamada', EMAIL: 'E-mail', TODO: 'Tarefa', LINKED_IN_CONNECT: 'LinkedIn', LINKED_IN_MESSAGE: 'LinkedIn' };
+  const ligacaoTarefa = (x) => (x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.titulo)}</a>` : `<span>${esc(x.titulo)}</span>`);
+
+  function itensTarefas(painel) {
+    const t = painel.tarefas;
+    if (!t) return [];
+    const tipo = (x) => TIPOS_TAREFA[x.tipo] || 'Tarefa';
+    const hoje = t.hoje.map((x) => `<li class="lembrete"><span class="etiqueta e-tarefa">Tarefa hoje</span>${ligacaoTarefa(x)}<span class="lembrete-meta">${esc(tipo(x))}${x.quando ? ` · ${esc(hora(x.quando))}` : ''}</span></li>`);
+    const atraso = t.atraso.map((x) => {
+      const n = x.quando ? Math.max(1, Math.round((inicioDoDia(new Date()) - inicioDoDia(new Date(x.quando))) / 864e5)) : 0;
+      return `<li class="lembrete"><span class="etiqueta e-atraso">Tarefa em atraso</span>${ligacaoTarefa(x)}<span class="lembrete-meta">${esc(tipo(x))}${x.quando ? ` · prevista a ${esc(fmt(x.quando, { day: '2-digit', month: '2-digit', year: 'numeric' }))} · ${n} ${n === 1 ? 'dia' : 'dias'}` : ''}</span></li>`;
+    });
+    const resto = t.atrasoTotal - t.atraso.length;
+    if (resto > 0) atraso.push(`<li class="lembrete mais-tarefas">${t.todas ? `<a href="${esc(t.todas)}" target="_blank" rel="noopener noreferrer">Mais ${resto} ${resto === 1 ? 'tarefa' : 'tarefas'} em atraso no HubSpot</a>` : `<span>Mais ${resto} em atraso</span>`}</li>`);
+    return [...hoje, ...atraso];
+  }
+
   function seccaoLembretes(painel) {
     const l = painel.lembretes;
     const cab = '<div class="cabecalho-seccao"><h2 id="t-lembretes">Lembretes</h2></div>';
-    if (!l) return `<section class="painel" aria-labelledby="t-lembretes">${cab}${erroSeccao(painel, 'lembretes')}</section>`;
+    const tarefas = itensTarefas(painel);
+    const erroTarefas = erroSeccao(painel, 'tarefas');
+    if (!l) return `<section class="painel" aria-labelledby="t-lembretes">${cab}${erroSeccao(painel, 'lembretes')}${tarefas.length ? `<ul class="lista-lembretes">${tarefas.join('')}</ul>` : ''}${erroTarefas}</section>`;
     const hoje = l.contactar.filter((c) => !c.emAtraso);
     const atraso = l.contactar.filter((c) => c.emAtraso);
     const itens = [
       ...l.aniversarios.map((c) => `<li class="lembrete"><span class="etiqueta e-aniversario">Aniversário</span>${ligacaoContacto(c)}<span class="lembrete-meta">Faz anos hoje</span></li>`),
       ...hoje.map((c) => `<li class="lembrete"><span class="etiqueta e-hoje">Contactar hoje</span>${ligacaoContacto(c)}<span class="lembrete-meta">Contactar futuramente · ${esc(dataCurta(c.data))}</span></li>`),
       ...atraso.map((c) => { const n = diasDeAtraso(c.data, painel.hoje); return `<li class="lembrete"><span class="etiqueta e-atraso">Em atraso</span>${ligacaoContacto(c)}<span class="lembrete-meta">Previsto a ${esc(dataCurta(c.data))} · ${n} ${n === 1 ? 'dia' : 'dias'}</span></li>`; }),
+      ...tarefas,
     ];
     return `<section class="painel" aria-labelledby="t-lembretes">${cab}
       ${itens.length ? `<ul class="lista-lembretes">${itens.join('')}</ul>` : '<p class="vazio">Sem lembretes para hoje.</p>'}
+      ${erroTarefas}
     </section>`;
   }
 

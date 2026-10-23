@@ -329,6 +329,9 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 .e-aniversario { background: var(--bronze-claro); color: var(--bronze-escuro); }
 .e-hoje { background: var(--ambar-fundo); color: var(--ambar-texto); }
 .e-atraso { background: #FBECEC; color: #8A1F1F; }
+.e-tarefa { background: #EAF0F6; color: #2E4A66; }
+.mais-tarefas { display: block; font-size: 14px; }
+.mais-tarefas a { font-weight: 700; color: var(--bronze); }
 .indicadores { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .indicadores.dois { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .indicador { background: var(--fundo); border: 1px solid var(--linha); border-radius: var(--raio); padding: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }

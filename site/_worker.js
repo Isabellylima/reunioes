@@ -1067,6 +1067,26 @@ function fonteHubSpot(env) {
       return { aniversarios, contactar };
     },
 
+    // Tarefas por concluir atribuídas ao utilizador («Assigned to»): as de hoje e as em atraso (as 10 mais recentes + total)
+    async tarefas(ownerId, p) {
+      const base = [
+        { propertyName: 'hubspot_owner_id', operator: 'EQ', value: String(ownerId) },
+        { propertyName: 'hs_task_status', operator: 'NOT_IN', values: ['COMPLETED'] },
+      ];
+      const props = ['hs_task_subject', 'hs_task_type', 'hs_timestamp', 'hs_task_status'];
+      const paraTarefa = (o) => {
+        const q = o.properties || {};
+        return { id: String(o.id), titulo: String(q.hs_task_subject || '').trim() || '(sem título)', tipo: q.hs_task_type || '', quando: Date.parse(q.hs_timestamp) || null };
+      };
+      const hoje = await procurarTodos('tasks', [{ filters: [...base, { propertyName: 'hs_timestamp', operator: 'BETWEEN', value: String(p.inicioDia), highValue: String(p.fimDia - 1) }] }],
+        props, [{ propertyName: 'hs_timestamp', direction: 'ASCENDING' }], 3);
+      const r = await pedir('POST', '/crm/v3/objects/tasks/search', {
+        filterGroups: [{ filters: [...base, { propertyName: 'hs_timestamp', operator: 'LT', value: String(p.inicioDia) }] }],
+        properties: props, sorts: [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], limit: 10,
+      });
+      return { hoje: hoje.map(paraTarefa), atraso: ((r && r.results) || []).map(paraTarefa), atrasoTotal: Number((r && r.total) || 0) };
+    },
+
     // Leads (só para quem está em LEADS_OWNER_IDS): «Proprietário do Acompanhamento» = utilizador
     async indicadoresLeads(ownerId, p) {
       const base = [
@@ -1269,6 +1289,13 @@ function fonteDemo() {
       };
     },
     async indicadoresLeads() { return { recebidasMes: 14, comInteresse: 37, novosAcompanhamentos: 6 }; },
+    async tarefas(ownerId, p) {
+      return {
+        hoje: [{ id: '7001', titulo: 'Ligar a confirmar visita ao PURE', tipo: 'CALL', quando: p.inicioDia + 10 * 36e5 }, { id: '7002', titulo: 'Enviar planta da fração 3B', tipo: 'EMAIL', quando: p.inicioDia + 15 * 36e5 }],
+        atraso: [{ id: '7003', titulo: 'Validar/atualizar o Interesse após a chamada', tipo: 'TODO', quando: p.inicioDia - 2 * 864e5 + 9 * 36e5 }],
+        atrasoTotal: 1,
+      };
+    },
     async indicadoresNegocios() { return { fechadosTotal: 9, fechadosMes: 1 }; },
     async equipa() {
       return [['758451159', 'Gabriela Matos'], ['77041306', 'Ruben Costa'], ['847260113', 'Carla Barros'], ['268831414', 'Marta Sousa']]
@@ -1389,6 +1416,7 @@ function resumoTexto(t) {
      Negócios   hubspot_owner_id, status_do_negocio ∈ DEALS_STATUS_FECHADO (omissão "Vendida" = Concluído);
                 no mês: data_cpcv (ou closedate quando não há Data CPCV)
      Reuniões   hubspot_owner_id, hs_meeting_outcome = COMPLETED, hs_meeting_start_time, hs_activity_type
+     Tarefas    hubspot_owner_id («Assigned to»), hs_task_status ≠ COMPLETED, hs_timestamp (data prevista): hoje e em atraso
    Os indicadores de leads só são calculados para os proprietários em LEADS_OWNER_IDS (omissão: Ruben Costa). */
 
 const PORTAL_HUBSPOT_OMISSAO = '27006740';
@@ -1421,6 +1449,8 @@ function periodoLisboa(agora) {
     hoje: h.data,
     hojeUtc: Date.UTC(h.ano, h.mes - 1, h.dia),   // as propriedades de data do HubSpot guardam a meia-noite UTC
     inicioMesUtc: Date.UTC(h.ano, h.mes - 1, 1),
+    inicioDia: meiaNoiteLisboa(h.ano, h.mes, h.dia),
+    fimDia: meiaNoiteLisboa(h.ano, h.mes, h.dia + 1),
     mes: h.mes, dia: h.dia, ano: h.ano,
     inicioMes: meiaNoiteLisboa(h.ano, h.mes, 1),
     fimMes: meiaNoiteLisboa(h.ano, h.mes + 1, 1),
@@ -1480,6 +1510,12 @@ async function painelInicio(env, fonte, utilizador, agora = Date.now()) {
       contactar: l.contactar.map((c) => ({ ...c, url: fichaContacto(c.id), emAtraso: c.data < p.hoje })),
     };
   });
+  const fichaTarefa = (id) => (fonte.modo === 'hubspot' ? `https://app.hubspot.com/tasks/${portal}/view/all/task/${encodeURIComponent(id)}` : null);
+  const tarefas = await seccao('tarefas', async () => {
+    const t = await fonte.tarefas(ownerId, p);
+    const comUrl = (x) => ({ ...x, url: fichaTarefa(x.id) });
+    return { hoje: t.hoje.map(comUrl), atraso: t.atraso.map(comUrl), atrasoTotal: t.atrasoTotal, todas: fonte.modo === 'hubspot' ? `https://app.hubspot.com/tasks/${portal}/view/all` : null };
+  });
   const leads = verLeads ? await seccao('leads', () => fonte.indicadoresLeads(ownerId, p)) : null;
   const negocios = await seccao('negocios', () => fonte.indicadoresNegocios(ownerId, p, estadosFechado));
   const reunioes = await seccao('reunioes', async () => {
@@ -1497,7 +1533,7 @@ async function painelInicio(env, fonte, utilizador, agora = Date.now()) {
   const dados = {
     hoje: p.hoje,
     mes: new Intl.DateTimeFormat('pt-PT', { timeZone: 'Europe/Lisbon', month: 'long', year: 'numeric' }).format(new Date(agora)),
-    lembretes, leads, verLeads, negocios, reunioes, erros,
+    lembretes, tarefas, leads, verLeads, negocios, reunioes, erros,
   };
   if (!Object.keys(erros).length) painelCache.set(chave, { exp: agora + PAINEL_VALIDADE_MS, dados });
   return dados;

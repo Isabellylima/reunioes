@@ -154,6 +154,7 @@ O Início mostra, por esta ordem: boas-vindas, «+ Agendar reunião», resumo (H
 |---|---|
 | Aniversários | contactos com `proprietario_do_acompanhamento` = utilizador e `data_de_nascimento` no dia de hoje (Lisboa) |
 | Contactar futuramente | `status_atendimento` = «Contactar futuramente», `data_do_proximo_contacto` ≤ hoje; separa hoje / em atraso |
+| Tarefas | tarefas com `hubspot_owner_id` («Assigned to») = utilizador e `hs_task_status` ≠ Completed: todas as de hoje e as 10 em atraso mais recentes, com o total e ligação ao HubSpot |
 | Leads recebidas no mês | `tipo_de_contacto` ∋ Lead, `proprietario_do_acompanhamento` = utilizador, `createdate` no mês |
 | Leads com interesse | idem, `interesse` ∈ Interessado c/condição · c/condição noutros projetos · condição indefinida (acumulado) |
 | Novos acompanhamentos | idem, `status_atendimento` = Novo (situação atual) |

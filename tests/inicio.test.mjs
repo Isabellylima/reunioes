@@ -80,6 +80,12 @@ function hubspotFalso({ tiposExtra = [] } = {}) {
         return new Response(JSON.stringify({ total, results: [] }));
       }
       if (m[1] === 'deals') return new Response(JSON.stringify({ total: filtro(corpo, 'closedate') ? 2 : 12, results: [] }));
+      if (m[1] === 'tasks') {
+        if (filtro(corpo, 'hs_timestamp').operator === 'BETWEEN') {
+          return new Response(JSON.stringify({ total: 1, results: [{ id: '31', properties: { hs_task_subject: 'Ligar hoje', hs_task_type: 'CALL', hs_timestamp: new Date(p.inicioDia + 9 * 36e5).toISOString() } }] }));
+        }
+        return new Response(JSON.stringify({ total: 14, results: [{ id: '32', properties: { hs_task_subject: 'Atrasada', hs_task_type: 'TODO', hs_timestamp: new Date(p.inicioDia - 2 * 864e5).toISOString() } }] }));
+      }
       if (m[1] === 'meetings') {
         const tipos = ['Reunião Comercial', 'Reunião Comercial', 'Reunião Visita Obra', '', 'Tipo antigo'];
         return new Response(JSON.stringify({ total: tipos.length, results: tipos.map((t, i) => ({ id: String(500 + i), properties: { hs_activity_type: t } })) }));
@@ -352,4 +358,28 @@ test('HubSpot: a reunião leva os participantes da equipa (hs_attendee_owner_ids
     assert.match(criada.properties.hs_internal_meeting_notes, /Convidados: Gabriela Matos \(gabriela\.matos@fercopor\.pt\), externo@exemplo\.pt/);
     assert.deepEqual(criada.associations.map((x) => x.to.id), ['2001']);   // os convidados não são associados como contactos
   } finally { globalThis.fetch = original; }
+});
+
+test('Lembretes: tarefas por concluir do utilizador, de hoje e em atraso (10 mais recentes + total)', async () => {
+  const f = hubspotFalso();
+  const { dados } = await inicioComo('ana.teste@fercopor.pt', f);
+  const tarefas = f.pesquisas.filter((x) => x.objeto === 'tasks');
+  assert.equal(tarefas.length, 2);
+  for (const t of tarefas) {
+    assert.ok(temFiltro(t, 'hubspot_owner_id', ANA), 'só as atribuídas ao utilizador');
+    const estado = filtrosDe(t).find((x) => x.propertyName === 'hs_task_status');
+    assert.equal(estado.operator, 'NOT_IN');
+    assert.deepEqual(estado.values, ['COMPLETED']);
+  }
+  const hoje = filtrosDe(tarefas.find((t) => filtrosDe(t).some((x) => x.operator === 'BETWEEN'))).find((x) => x.propertyName === 'hs_timestamp');
+  assert.equal(hoje.value, String(p.inicioDia));
+  assert.equal(Number(hoje.highValue), p.fimDia - 1);
+  const atraso = tarefas.find((t) => filtrosDe(t).some((x) => x.propertyName === 'hs_timestamp' && x.operator === 'LT'));
+  assert.equal(atraso.corpo.limit, 10);
+  assert.equal(atraso.corpo.sorts[0].direction, 'DESCENDING');
+  assert.deepEqual(dados.tarefas.hoje.map((t) => t.titulo), ['Ligar hoje']);
+  assert.deepEqual(dados.tarefas.atraso.map((t) => t.titulo), ['Atrasada']);
+  assert.equal(dados.tarefas.atrasoTotal, 14);
+  assert.equal(dados.tarefas.hoje[0].url, 'https://app.hubspot.com/tasks/27006740/view/all/task/31');
+  assert.equal(dados.tarefas.todas, 'https://app.hubspot.com/tasks/27006740/view/all');
 });
