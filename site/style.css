@@ -54,7 +54,14 @@ h1, h2, h3 { margin: 0; }
 }
 .nav-topo a.ativo { color: var(--creme); border-bottom-color: #B49A55; font-weight: 700; }
 .topo-acoes { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-.botao-topo { display: none; }
+.topo .botao-topo { display: none; }   /* telemóvel: só o botão circular «+» */
+.botao-mais {
+  width: 40px; height: 40px; border-radius: 20px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bronze); color: #FFFFFF; text-decoration: none;
+  font-size: 24px; font-weight: 600; line-height: 1;
+}
+.botao-mais:hover { background: var(--bronze-escuro); color: #FFFFFF; }
 .avatar {
   width: 44px; height: 44px; border-radius: 22px; border: 1px solid var(--creme);
   display: flex; align-items: center; justify-content: center; font-weight: 700; color: var(--creme);
@@ -80,7 +87,8 @@ h1, h2, h3 { margin: 0; }
 @media (min-width: 900px) {
   body { padding-bottom: 0; }
   .nav-topo { display: flex; }
-  .botao-topo { display: inline-flex; }
+  .topo .botao-topo { display: inline-flex; }
+  .topo .botao-mais { display: none; }
   .nav-fundo { display: none; }
   .marca { flex-direction: row; align-items: center; gap: 14px; }
 }
@@ -308,3 +316,38 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 }
 .mensagem.erro { background: #8A1F1F; }
 @media (min-width: 900px) { .mensagem { bottom: 24px; } }
+
+/* ---------- Página inicial: lembretes e indicadores ---------- */
+.painel { background: var(--superficie); border: 1px solid var(--linha); border-radius: var(--raio); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.lista-lembretes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.lembrete { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; row-gap: 2px; align-items: center; padding: 10px 0; border-top: 1px solid var(--linha); }
+.lembrete:first-child { border-top: 0; padding-top: 0; }
+.lembrete a, .lembrete > span:nth-child(2) { font-weight: 700; color: var(--tinta); }
+.lembrete a:hover { color: var(--bronze); }
+.lembrete-meta { grid-column: 2; font-size: 13px; color: var(--texto-3); }
+.etiqueta { grid-row: span 2; align-self: start; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 3px; white-space: nowrap; }
+.e-aniversario { background: var(--bronze-claro); color: var(--bronze-escuro); }
+.e-hoje { background: var(--ambar-fundo); color: var(--ambar-texto); }
+.e-atraso { background: #FBECEC; color: #8A1F1F; }
+.indicadores { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.indicadores.dois { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.indicador { background: var(--fundo); border: 1px solid var(--linha); border-radius: var(--raio); padding: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.indicador strong { font-size: 26px; font-weight: 800; line-height: 1.1; }
+.indicador span { font-size: 13px; font-weight: 700; color: var(--tinta); hyphens: auto; overflow-wrap: break-word; }
+.indicador small { font-size: 12px; color: var(--texto-3); }
+.realizadas { display: grid; gap: 12px; }
+.contagens { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.contagens li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--linha); font-size: 14px; }
+.contagens li:first-child { border-top: 0; }
+.contagens strong { font-weight: 800; }
+.contagens .sem-tipo span { color: var(--texto-3); }
+@media (max-width: 480px) {
+  .indicadores { gap: 8px; }
+  .indicador { padding: 10px; }
+  .indicador strong { font-size: 22px; }
+  .indicador span { font-size: 12px; line-height: 1.25; }
+  .indicador small { font-size: 11px; }
+}
+@media (min-width: 900px) {
+  .realizadas { grid-template-columns: minmax(180px, 240px) 1fr; align-items: start; }
+}

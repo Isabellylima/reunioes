@@ -16,6 +16,8 @@ const kv = new Map();
 const env = {
   DEMO_USER_EMAIL: email,
   ADMIN_EMAILS: email,
+  // Para ver a secção «Situação das Leads» no modo demo: LEADS_OWNER_IDS=<ownerId de /api/me> node tools/servidor-local.mjs
+  ...(process.env.LEADS_OWNER_IDS ? { LEADS_OWNER_IDS: process.env.LEADS_OWNER_IDS } : {}),
   REUNIOES_KV: {
     async get(k, t) { const v = kv.get(k); return v == null ? null : (t === 'json' ? JSON.parse(v) : v); },
     async put(k, v) { kv.set(k, v); },

@@ -146,6 +146,24 @@ Ao agendar na app, a reunião criada no HubSpot fica com:
 
 Os três ficam também nas notas internas, como antes (`Empreendimento: …`, `Tipologia: …`, `Orçamento: 450 000 €`).
 
+## Página inicial: lembretes e indicadores (só leitura)
+
+O Início mostra, por esta ordem: boas-vindas, «+ Agendar reunião», resumo (Hoje, Próximas, Por classificar), Lembretes, Situação das Leads (só o Ruben), Meus Negócios e Reuniões realizadas. Tudo é lido do HubSpot pelo servidor (`/api/inicio`), sempre com o proprietário HubSpot da pessoa com sessão iniciada, e guardado 2 minutos por utilizador.
+
+| Secção | Regra |
+|---|---|
+| Aniversários | contactos com `proprietario_do_acompanhamento` = utilizador e `data_de_nascimento` no dia de hoje (Lisboa) |
+| Contactar futuramente | `status_atendimento` = «Contactar futuramente», `data_do_proximo_contacto` ≤ hoje; separa hoje / em atraso |
+| Leads recebidas no mês | `tipo_de_contacto` ∋ Lead, `proprietario_do_acompanhamento` = utilizador, `createdate` no mês |
+| Leads com interesse | idem, `interesse` ∈ Interessado c/condição · c/condição noutros projetos · condição indefinida (acumulado) |
+| Novos acompanhamentos | idem, `status_atendimento` = Novo (situação atual) |
+| Negócios fechados | `hubspot_owner_id` = utilizador, `hs_is_closed_won` = true, `pipeline` ∈ `DEALS_PIPELINES`; total e `closedate` no mês até agora |
+| Reuniões realizadas | `hubspot_owner_id` = utilizador, `hs_meeting_outcome` = COMPLETED, início no mês; uma linha por opção de `hs_activity_type` e «Sem tipo definido» |
+
+Variáveis opcionais (Text): `LEADS_OWNER_IDS` (omissão `77041306`, Ruben Costa), `DEALS_PIPELINES` (omissão `default`, Pipeline de Vendas), `HUBSPOT_PORTAL_ID` (omissão `27006740`, para as ligações às fichas).
+
+A Private App do HubSpot tem de poder **ler** contactos, negócios (`crm.objects.deals.read`) e reuniões. Se faltar uma permissão, só essa secção mostra um aviso.
+
 ## Mais tarde, só com autorização: ligar ao HubSpot
 
 1. **Leitura:** Private App «FERCOPOR Reuniões» com âmbitos de leitura de contactos, de proprietários, do esquema de negócios (opções de «Empreendimento») e de reuniões.

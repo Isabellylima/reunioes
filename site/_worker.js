@@ -191,6 +191,9 @@ async function tratar(request, env) {
   if (m === 'POST' && caminho === '/api/calendario/desligar') {
     return desligarCalendario(env, utilizador);
   }
+  if (m === 'GET' && caminho === '/api/inicio') {
+    return json(await painelInicio(env, fonte, utilizador));
+  }
   if (m === 'GET' && caminho === '/api/empreendimentos') {
     const [empreendimentos, tipologias] = await Promise.all([fonte.empreendimentos(), fonte.tipologias()]);
     return json({ empreendimentos, tipologias });
@@ -900,11 +903,17 @@ function criarFonte(env) {
 
 function fonteHubSpot(env) {
   const pedir = async (metodo, caminho, corpo) => {
-    const r = await fetch(HUBSPOT + caminho, {
-      method: metodo,
-      headers: { Authorization: `Bearer ${env.HUBSPOT_TOKEN}`, 'Content-Type': 'application/json' },
-      body: corpo ? JSON.stringify(corpo) : undefined,
-    });
+    let r;
+    for (let tentativa = 0; ; tentativa++) {
+      r = await fetch(HUBSPOT + caminho, {
+        method: metodo,
+        headers: { Authorization: `Bearer ${env.HUBSPOT_TOKEN}`, 'Content-Type': 'application/json' },
+        body: corpo ? JSON.stringify(corpo) : undefined,
+      });
+      // Limite de pedidos do HubSpot (a pesquisa aceita poucos pedidos por segundo): espera e tenta de novo, no máximo 2 vezes
+      if (r.status !== 429 || tentativa >= 2) break;
+      await new Promise((ok) => setTimeout(ok, 1100 * (tentativa + 1)));
+    }
     if (r.status === 404) return null;
     if (!r.ok) {
       const texto = await r.text();
@@ -975,9 +984,96 @@ function fonteHubSpot(env) {
     return { id: String(o.id), nome, email: p.email || '', tipoDeContacto: p.tipo_de_contacto || '', ...papelDoContacto(p.tipo_de_contacto) };
   };
 
+  // Pesquisa com paginação (100 por página, até maxPaginas); só leitura
+  const procurarTodos = async (objeto, filterGroups, properties, sorts, maxPaginas = 20) => {
+    const todos = [];
+    let after;
+    for (let i = 0; i < maxPaginas; i++) {
+      const r = await pedir('POST', `/crm/v3/objects/${objeto}/search`, { filterGroups, properties, sorts, limit: 100, ...(after ? { after } : {}) });
+      todos.push(...((r && r.results) || []));
+      after = r && r.paging && r.paging.next && r.paging.next.after;
+      if (!after) return todos;
+    }
+    console.warn('HubSpot: pesquisa truncada', objeto, todos.length);
+    return todos;
+  };
+  // Só o total (1 resultado pedido)
+  const contar = async (objeto, filterGroups) => {
+    const r = await pedir('POST', `/crm/v3/objects/${objeto}/search`, { filterGroups, properties: ['hs_object_id'], limit: 1 });
+    return Number((r && r.total) || 0);
+  };
+  const nomeContacto = (o) => {
+    const p = o.properties || {};
+    return [p.firstname, p.lastname].filter(Boolean).join(' ') || p.email || `Contacto ${o.id}`;
+  };
+
   return {
     modo: 'hubspot',
     escritaAtiva: env.HUBSPOT_WRITE_ENABLED === 'true',
+
+    /* --- Painel inicial (só leitura; o filtro do utilizador é sempre aplicado aqui, no servidor) --- */
+
+    // Lembretes: só contactos com «Proprietário do Acompanhamento» = utilizador
+    async lembretes(ownerId, p) {
+      const dono = { propertyName: 'proprietario_do_acompanhamento', operator: 'EQ', value: String(ownerId) };
+      const comNascimento = await procurarTodos('contacts', [{ filters: [dono, { propertyName: 'data_de_nascimento', operator: 'HAS_PROPERTY' }] }],
+        ['firstname', 'lastname', 'email', 'data_de_nascimento']);
+      const aniversarios = comNascimento
+        .filter((o) => fazAnosHoje(o.properties && o.properties.data_de_nascimento, p))
+        .map((o) => ({ id: String(o.id), nome: nomeContacto(o) }));
+      const aContactar = await procurarTodos('contacts', [{ filters: [
+        dono,
+        { propertyName: 'status_atendimento', operator: 'EQ', value: 'Contactar futuramente' },
+        { propertyName: 'data_do_proximo_contacto', operator: 'LTE', value: String(p.hojeUtc) },
+      ] }], ['firstname', 'lastname', 'email', 'data_do_proximo_contacto'], [{ propertyName: 'data_do_proximo_contacto', direction: 'ASCENDING' }]);
+      const contactar = aContactar
+        .map((o) => ({ id: String(o.id), nome: nomeContacto(o), data: String((o.properties || {}).data_do_proximo_contacto || '').slice(0, 10) }))
+        .filter((c) => /^\d{4}-\d{2}-\d{2}$/.test(c.data) && c.data <= p.hoje);
+      return { aniversarios, contactar };
+    },
+
+    // Leads (só para quem está em LEADS_OWNER_IDS): «Proprietário do Acompanhamento» = utilizador
+    async indicadoresLeads(ownerId, p) {
+      const base = [
+        { propertyName: 'tipo_de_contacto', operator: 'IN', values: ['Lead'] },
+        { propertyName: 'proprietario_do_acompanhamento', operator: 'EQ', value: String(ownerId) },
+      ];
+      const recebidasMes = await contar('contacts', [{ filters: [...base, { propertyName: 'createdate', operator: 'BETWEEN', value: String(p.inicioMes), highValue: String(p.agora) }] }]);
+      const comInteresse = await contar('contacts', [{ filters: [...base, { propertyName: 'interesse', operator: 'IN', values: INTERESSES_COM_INTERESSE }] }]);
+      const novosAcompanhamentos = await contar('contacts', [{ filters: [...base, { propertyName: 'status_atendimento', operator: 'EQ', value: 'Novo' }] }]);
+      return { recebidasMes, comInteresse, novosAcompanhamentos };
+    },
+
+    // Negócios: «Deal owner» (hubspot_owner_id) = utilizador, fase ganha, só nos pipelines comerciais
+    async indicadoresNegocios(ownerId, p, pipelines) {
+      const base = [
+        { propertyName: 'hubspot_owner_id', operator: 'EQ', value: String(ownerId) },
+        { propertyName: 'hs_is_closed_won', operator: 'EQ', value: 'true' },
+        { propertyName: 'pipeline', operator: 'IN', values: pipelines },
+      ];
+      const fechadosTotal = await contar('deals', [{ filters: base }]);
+      const fechadosMes = await contar('deals', [{ filters: [...base, { propertyName: 'closedate', operator: 'BETWEEN', value: String(p.inicioMes), highValue: String(p.agora) }] }]);
+      return { fechadosTotal, fechadosMes };
+    },
+
+    // Reuniões concluídas do utilizador no mês, por valor de «Call and meeting type»
+    async reunioesRealizadas(ownerId, p) {
+      const lista = await procurarTodos('meetings', [{ filters: [
+        { propertyName: 'hubspot_owner_id', operator: 'EQ', value: String(ownerId) },
+        { propertyName: 'hs_meeting_outcome', operator: 'EQ', value: 'COMPLETED' },
+        { propertyName: 'hs_meeting_start_time', operator: 'BETWEEN', value: String(p.inicioMes), highValue: String(p.fimMes - 1) },
+      ] }], ['hs_activity_type']);
+      return contarPorTipo(lista.map((o) => (o.properties || {}).hs_activity_type));
+    },
+
+    // Todas as opções atuais de «Call and meeting type» (guardadas 10 minutos)
+    async tiposReuniao() {
+      if (tiposReuniaoCache && tiposReuniaoCache.exp > Date.now()) return tiposReuniaoCache.tipos;
+      const r = await pedir('GET', '/crm/v3/properties/meetings/hs_activity_type');
+      const tipos = ((r && r.options) || []).filter((o) => !o.hidden).map((o) => ({ valor: o.value, nome: o.label || o.value }));
+      tiposReuniaoCache = { exp: Date.now() + 600000, tipos };
+      return tipos;
+    },
 
     async proprietarioPorEmail(email) {
       const r = await pedir('GET', `/crm/v3/owners/?email=${encodeURIComponent(email)}&archived=false`);
@@ -1108,6 +1204,20 @@ function fonteDemo() {
     },
     async empreendimentos() { return d.empreendimentos; },
     async tipologias() { return d.tipologias; },
+    // Painel (fictício): lembretes e indicadores de exemplo; as reuniões realizadas contam as reuniões de demonstração
+    async lembretes(ownerId, p) {
+      const atras = (dias) => partesLisboa(p.agora - dias * 864e5).data;
+      return {
+        aniversarios: [{ id: '1005', nome: 'Sofia Macedo' }],
+        contactar: [{ id: '1008', nome: 'Ricardo Moura', data: atras(4) }, { id: '1004', nome: 'Luís Carvalho', data: p.hoje }],
+      };
+    },
+    async indicadoresLeads() { return { recebidasMes: 14, comInteresse: 37, novosAcompanhamentos: 6 }; },
+    async indicadoresNegocios() { return { fechadosTotal: 9, fechadosMes: 1 }; },
+    async reunioesRealizadas(ownerId, p) {
+      return contarPorTipo(d.reunioes.filter((r) => r.ownerId === String(ownerId) && r.resultado === 'COMPLETED' && r.inicio >= p.inicioMes && r.inicio < p.fimMes).map((r) => r.tipo));
+    },
+    async tiposReuniao() { return TIPOS.map((t) => ({ valor: t, nome: t })); },
     async procurarContactos(q) {
       const n = normalizar(q);
       return d.contactos.filter((c) => !c.excluido && normalizar(c.nome + ' ' + c.email).includes(n)).slice(0, 20);
@@ -1208,6 +1318,125 @@ function resumoTexto(t) {
   let h = 2166136261;
   for (const c of t) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
   return h.toString(36);
+}
+
+/* ---------- Painel inicial: lembretes e indicadores (só leitura) ----------
+   Propriedades HubSpot usadas (confirmadas em 2026-10-23):
+     Contactos  proprietario_do_acompanhamento (lista com IDs de proprietário), data_de_nascimento (data),
+                status_atendimento = "Contactar futuramente" | "Novo", data_do_proximo_contacto (data),
+                tipo_de_contacto ∋ "Lead", interesse ∈ INTERESSES_COM_INTERESSE, createdate
+     Negócios   hubspot_owner_id, hs_is_closed_won = true (fase «Negócio Fechado com Sucesso», closedwon),
+                pipeline ∈ DEALS_PIPELINES (omissão: "default" = Pipeline de Vendas), closedate
+     Reuniões   hubspot_owner_id, hs_meeting_outcome = COMPLETED, hs_meeting_start_time, hs_activity_type
+   Os indicadores de leads só são calculados para os proprietários em LEADS_OWNER_IDS (omissão: Ruben Costa). */
+
+const PORTAL_HUBSPOT_OMISSAO = '27006740';
+const LEADS_OWNER_IDS_OMISSAO = '77041306';   // Ruben Costa
+const PIPELINES_OMISSAO = 'default';           // Pipeline de Vendas
+const INTERESSES_COM_INTERESSE = ['Interessado c/condição', 'Interessado c/condição noutros projetos', 'Interessado condição indefinida'];
+const PAINEL_VALIDADE_MS = 120000;             // cada utilizador: no máximo uma ronda de consultas a cada 2 minutos
+const painelCache = new Map();
+let tiposReuniaoCache = null;
+function limparCachesPainel() { painelCache.clear(); tiposReuniaoCache = null; }
+
+function partesLisboa(ms) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Lisbon', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { ano: Number(p.year), mes: Number(p.month), dia: Number(p.day), data: `${p.year}-${p.month}-${p.day}` };
+}
+
+// Meia-noite em Lisboa (mes 1–12; aceita mes 13 = janeiro do ano seguinte)
+function meiaNoiteLisboa(ano, mes, dia) {
+  const utc = Date.UTC(ano, mes - 1, dia);
+  return utc - desvioLisboaHoras(utc) * 36e5;
+}
+
+function periodoLisboa(agora) {
+  const h = partesLisboa(agora);
+  return {
+    agora,
+    hoje: h.data,
+    hojeUtc: Date.UTC(h.ano, h.mes - 1, h.dia),   // as propriedades de data do HubSpot guardam a meia-noite UTC
+    mes: h.mes, dia: h.dia, ano: h.ano,
+    inicioMes: meiaNoiteLisboa(h.ano, h.mes, 1),
+    fimMes: meiaNoiteLisboa(h.ano, h.mes + 1, 1),
+  };
+}
+
+// Faz anos hoje (Lisboa). Quem nasceu a 29/02 é lembrado a 28/02 nos anos não bissextos.
+function fazAnosHoje(dataNascimento, p) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dataNascimento || ''));
+  if (!m) return false;
+  const mes = Number(m[2]), dia = Number(m[3]);
+  if (mes === p.mes && dia === p.dia) return true;
+  const bissexto = (p.ano % 4 === 0 && p.ano % 100 !== 0) || p.ano % 400 === 0;
+  return mes === 2 && dia === 29 && !bissexto && p.mes === 2 && p.dia === 28;
+}
+
+function contarPorTipo(valores) {
+  const porValor = {};
+  let semTipo = 0;
+  for (const v of valores) {
+    const t = String(v || '').trim();
+    if (!t) semTipo++;
+    else porValor[t] = (porValor[t] || 0) + 1;
+  }
+  return { porValor, semTipo };
+}
+
+function listaIds(texto) {
+  return String(texto || '').split(',').map((v) => v.trim()).filter(Boolean);
+}
+
+async function painelInicio(env, fonte, utilizador, agora = Date.now()) {
+  const p = periodoLisboa(agora);
+  const chave = `${fonte.modo}:${utilizador.ownerId}:${p.hoje}`;
+  const guardado = painelCache.get(chave);
+  if (guardado && guardado.exp > agora) return guardado.dados;
+
+  const ownerId = String(utilizador.ownerId);
+  const portal = String(env.HUBSPOT_PORTAL_ID || PORTAL_HUBSPOT_OMISSAO);
+  const fichaContacto = (id) => (fonte.modo === 'hubspot' ? `https://app.hubspot.com/contacts/${portal}/record/0-1/${encodeURIComponent(id)}` : null);
+  const verLeads = listaIds(env.LEADS_OWNER_IDS || LEADS_OWNER_IDS_OMISSAO).includes(ownerId);
+  const pipelines = listaIds(env.DEALS_PIPELINES || PIPELINES_OMISSAO);
+  const erros = {};
+  // Secções em sequência (o HubSpot limita as pesquisas por segundo); uma falha não impede as outras
+  const seccao = async (nome, fn) => {
+    try { return await fn(); } catch (e) {
+      console.error('painel', nome, e && e.message);
+      erros[nome] = 'Não foi possível ler estes dados do HubSpot. Tente mais tarde.';
+      return null;
+    }
+  };
+
+  const lembretes = await seccao('lembretes', async () => {
+    const l = await fonte.lembretes(ownerId, p);
+    return {
+      aniversarios: l.aniversarios.map((c) => ({ ...c, url: fichaContacto(c.id) })),
+      contactar: l.contactar.map((c) => ({ ...c, url: fichaContacto(c.id), emAtraso: c.data < p.hoje })),
+    };
+  });
+  const leads = verLeads ? await seccao('leads', () => fonte.indicadoresLeads(ownerId, p)) : null;
+  const negocios = await seccao('negocios', () => fonte.indicadoresNegocios(ownerId, p, pipelines));
+  const reunioes = await seccao('reunioes', async () => {
+    const [contagem, tipos] = [await fonte.reunioesRealizadas(ownerId, p), await fonte.tiposReuniao()];
+    const conhecidos = new Set(tipos.map((t) => t.valor));
+    const porTipo = [
+      ...tipos.map((t) => ({ tipo: t.valor, nome: t.nome, total: contagem.porValor[t.valor] || 0 })),
+      // valores usados em reuniões mas que já não existem como opção também contam
+      ...Object.keys(contagem.porValor).filter((v) => !conhecidos.has(v)).map((v) => ({ tipo: v, nome: v, total: contagem.porValor[v] })),
+    ];
+    const total = porTipo.reduce((s, t) => s + t.total, 0) + contagem.semTipo;
+    return { porTipo, semTipo: contagem.semTipo, total };
+  });
+
+  const dados = {
+    hoje: p.hoje,
+    mes: new Intl.DateTimeFormat('pt-PT', { timeZone: 'Europe/Lisbon', month: 'long', year: 'numeric' }).format(new Date(agora)),
+    lembretes, leads, verLeads, negocios, reunioes, erros,
+  };
+  if (!Object.keys(erros).length) painelCache.set(chave, { exp: agora + PAINEL_VALIDADE_MS, dados });
+  return dados;
 }
 
 /* ---------- Calendário Outlook / Teams (Microsoft Graph, permissões delegadas) ----------
@@ -1637,4 +1866,4 @@ function comSeguranca(resposta) {
   return r;
 }
 
-export const _teste = { gerarTitulo, gerarNotas, papelDoContacto, validarNovaReuniao, juntarNotas, tratar, ErroHttp, marcarDuplicados };
+export const _teste = { gerarTitulo, gerarNotas, papelDoContacto, validarNovaReuniao, juntarNotas, tratar, ErroHttp, marcarDuplicados, periodoLisboa, fazAnosHoje, painelInicio, limparCachesPainel };

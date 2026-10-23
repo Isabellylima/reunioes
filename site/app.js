@@ -137,12 +137,12 @@
   /* ---------- Ecrã: início ---------- */
   async function ecraInicio() {
     const hoje = inicioDoDia(new Date());
-    const [doDia, proximas, pendentes] = await Promise.all([
+    const [doDia, proximas, pendentes, painel] = await Promise.all([
       reunioesEntre(hoje, somarDias(hoje, 1)),
       reunioesEntre(somarDias(hoje, 1), somarDias(hoje, 15)),
       api('/api/reunioes/por-classificar').then((d) => d.reunioes),
+      api('/api/inicio').catch((e) => ({ falhou: e.message })),
     ]);
-    const outlook = await eventosOutlook(hoje, somarDias(hoje, 1), doDia);
     const primeiroNome = String(estado.eu.nome || '').split(' ')[0];
     const saudacao = new Date().getHours() < 13 ? 'Bom dia' : (new Date().getHours() < 20 ? 'Boa tarde' : 'Boa noite');
     return `
@@ -153,14 +153,77 @@
         <a href="#/lista/proximas"><strong>${proximas.length}</strong><span>Próximas</span></a>
         <a class="ambar" href="#/por-classificar"><strong>${pendentes.length}</strong><span>Por classificar</span></a>
       </div>
-      <section class="lista-reunioes" aria-labelledby="t-hoje">
-        <div class="cabecalho-seccao"><h2 id="t-hoje">Hoje</h2><a href="#/semana">Ver semana</a></div>
-        ${doDia.length || outlook.eventos.length ? cartoesMisturados(doDia, outlook.eventos) : '<p class="vazio">Sem reuniões hoje.</p>'}
-        ${notaOutlook(outlook)}
-      </section>
+      ${painel.falhou ? `<p class="nota">Não foi possível carregar os lembretes e indicadores: ${esc(painel.falhou)}</p>` : `
+        ${seccaoLembretes(painel)}
+        ${painel.verLeads ? seccaoLeads(painel) : ''}
+        ${seccaoNegocios(painel)}
+        ${seccaoRealizadas(painel)}`}
       ${calendarioPronto() ? '' : blocoCalendario()}
-      ${pendentes.length ? `<a class="faixa-ambar" href="#/por-classificar"><span><strong>${pendentes.length} ${pendentes.length === 1 ? 'reunião' : 'reuniões'} por classificar</strong>Já passaram e ainda não têm resultado</span><span aria-hidden="true">›</span></a>` : ''}
     `;
+  }
+
+  const erroSeccao = (painel, nome) => (painel.erros && painel.erros[nome] ? `<p class="nota">${esc(painel.erros[nome])}</p>` : '');
+  const dataCurta = (iso) => { const [a, m, d] = String(iso).split('-'); return `${d}/${m}/${a}`; };
+  const diasDeAtraso = (iso, hoje) => Math.round((Date.parse(hoje) - Date.parse(iso)) / 864e5);
+
+  function ligacaoContacto(c) {
+    return c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.nome)}</a>` : `<span>${esc(c.nome)}</span>`;
+  }
+
+  function seccaoLembretes(painel) {
+    const l = painel.lembretes;
+    const cab = '<div class="cabecalho-seccao"><h2 id="t-lembretes">Lembretes</h2></div>';
+    if (!l) return `<section class="painel" aria-labelledby="t-lembretes">${cab}${erroSeccao(painel, 'lembretes')}</section>`;
+    const hoje = l.contactar.filter((c) => !c.emAtraso);
+    const atraso = l.contactar.filter((c) => c.emAtraso);
+    const itens = [
+      ...l.aniversarios.map((c) => `<li class="lembrete"><span class="etiqueta e-aniversario">Aniversário</span>${ligacaoContacto(c)}<span class="lembrete-meta">Faz anos hoje</span></li>`),
+      ...hoje.map((c) => `<li class="lembrete"><span class="etiqueta e-hoje">Contactar hoje</span>${ligacaoContacto(c)}<span class="lembrete-meta">Contactar futuramente · ${esc(dataCurta(c.data))}</span></li>`),
+      ...atraso.map((c) => { const n = diasDeAtraso(c.data, painel.hoje); return `<li class="lembrete"><span class="etiqueta e-atraso">Em atraso</span>${ligacaoContacto(c)}<span class="lembrete-meta">Previsto a ${esc(dataCurta(c.data))} · ${n} ${n === 1 ? 'dia' : 'dias'}</span></li>`; }),
+    ];
+    return `<section class="painel" aria-labelledby="t-lembretes">${cab}
+      ${itens.length ? `<ul class="lista-lembretes">${itens.join('')}</ul>` : '<p class="vazio">Sem lembretes para hoje.</p>'}
+    </section>`;
+  }
+
+  const indicador = (n, rotulo, ajuda) => `<div class="indicador"><strong>${esc(n)}</strong><span>${esc(rotulo)}</span>${ajuda ? `<small>${esc(ajuda)}</small>` : ''}</div>`;
+
+  function seccaoLeads(painel) {
+    const l = painel.leads;
+    return `<section class="painel" aria-labelledby="t-leads">
+      <div class="cabecalho-seccao"><h2 id="t-leads">Situação das Leads</h2></div>
+      ${l ? `<div class="indicadores">
+        ${indicador(l.recebidasMes, 'Leads recebidas', 'Criadas este mês')}
+        ${indicador(l.comInteresse, 'Leads com interesse', 'Total acumulado')}
+        ${indicador(l.novosAcompanhamentos, 'Novos acompanhamentos', 'Situação atual')}
+      </div>` : erroSeccao(painel, 'leads')}
+    </section>`;
+  }
+
+  function seccaoNegocios(painel) {
+    const n = painel.negocios;
+    return `<section class="painel" aria-labelledby="t-negocios">
+      <div class="cabecalho-seccao"><h2 id="t-negocios">Meus Negócios</h2></div>
+      ${n ? `<div class="indicadores dois">
+        ${indicador(n.fechadosTotal, 'Negócios fechados', 'Total acumulado')}
+        ${indicador(n.fechadosMes, 'Fechados no mês', maiuscula(painel.mes))}
+      </div>` : erroSeccao(painel, 'negocios')}
+    </section>`;
+  }
+
+  function seccaoRealizadas(painel) {
+    const r = painel.reunioes;
+    const linhas = r ? [
+      ...r.porTipo.map((t) => `<li><span>${esc(t.nome.replace(/^Reunião /, ''))}</span><strong>${t.total}</strong></li>`),
+      ...(r.semTipo ? [`<li class="sem-tipo"><span>Sem tipo definido</span><strong>${r.semTipo}</strong></li>`] : []),
+    ] : [];
+    return `<section class="painel" aria-labelledby="t-realizadas">
+      <div class="cabecalho-seccao"><h2 id="t-realizadas">Reuniões realizadas</h2><span class="subtitulo">${esc(maiuscula(painel.mes))}</span></div>
+      ${r ? `<div class="realizadas">
+        ${indicador(r.total, r.total === 1 ? 'Reunião concluída' : 'Reuniões concluídas', 'Total do mês')}
+        <ul class="contagens">${linhas.join('')}</ul>
+      </div>` : erroSeccao(painel, 'reunioes')}
+    </section>`;
   }
 
   const calendario = () => (estado.eu && estado.eu.calendario) || { modo: 'desligado', ligado: false };
