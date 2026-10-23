@@ -180,6 +180,11 @@ async function tratar(request, env) {
     const fim = Date.parse(url.searchParams.get('fim') || '');
     return json(await disponibilidade(env, utilizador, inicio, fim));
   }
+  if (m === 'GET' && caminho === '/api/calendario/eventos') {
+    const de = Date.parse(url.searchParams.get('de') || '');
+    const ate = Date.parse(url.searchParams.get('ate') || '');
+    return json(await eventosCalendario(env, utilizador, de, ate));
+  }
   if (m === 'GET' && caminho === '/api/calendario/verificar') {
     return json(await verificarCalendario(env, utilizador));
   }
@@ -1239,7 +1244,7 @@ async function iniciarLigacaoCalendario(env, utilizador) {
   if (!env.REUNIOES_KV) throw new ErroHttp(503, 'Ligação KV (REUNIOES_KV) em falta.');
   if (modo === 'simulacao') {
     await env.REUNIOES_KV.put(`cal:${utilizador.email}`, JSON.stringify({ simulado: true, atualizado: Date.now() }));
-    return new Response(null, { status: 302, headers: { Location: '/#/inicio', 'Cache-Control': 'no-store' } });
+    return new Response(null, { status: 302, headers: { Location: '/#/microsoft', 'Cache-Control': 'no-store' } });
   }
   if (utilizador.autenticacao !== 'microsoft') throw new ErroHttp(403, 'Inicie sessão com a Microsoft para ligar o calendário.');
   const estado = aleatorio(24);
@@ -1282,7 +1287,7 @@ async function concluirLigacaoCalendario(request, env, temporario, codigo, limpa
     ambitos: String(tokens.dados.scope || '').split(' ').filter(Boolean).map((a) => a.replace(/^https:\/\/graph\.microsoft\.com\//, '')),
   }));
   acessosGraph.delete(temporario.e);
-  const h = new Headers({ Location: '/#/inicio', 'Cache-Control': 'no-store' });
+  const h = new Headers({ Location: '/#/microsoft', 'Cache-Control': 'no-store' });
   h.append('Set-Cookie', limpar);
   return new Response(null, { status: 302, headers: h });
 }
@@ -1402,6 +1407,50 @@ async function disponibilidade(env, utilizador, inicio, fim) {
   }
   const conflito = ocupados.some((o) => o.inicio < fim && o.fim > inicio);
   return { modo, ocupados, conflito };
+}
+
+/* --- Agenda Outlook do próprio utilizador (só leitura), para ver na app ao lado das reuniões do HubSpot ---
+   Os eventos que a app criou para reuniões do HubSpot ficam de fora: a reunião já aparece. */
+
+async function eventosCalendario(env, utilizador, de, ate) {
+  if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de || ate - de > 62 * 864e5) {
+    throw new ErroHttp(400, 'Intervalo de datas inválido.');
+  }
+  const cal = await estadoCalendario(env, utilizador);
+  if (!cal.ligado) return { ligado: false, eventos: [] };
+  if (cal.modo === 'simulacao') {
+    // Simulação: o mesmo compromisso fictício da disponibilidade, das 13:00 às 14:00 (Lisboa), nos dias úteis
+    const eventos = [];
+    for (let t = Date.parse(new Date(de).toISOString().slice(0, 10)); t < ate; t += 864e5) {
+      const dia = new Date(t).getUTCDay();
+      const i = t + 13 * 36e5 - desvioLisboaHoras(t + 13 * 36e5) * 36e5;
+      if (dia > 0 && dia < 6 && i + 36e5 > de && i < ate) {
+        eventos.push({ id: `sim-${t}`, titulo: 'Compromisso Outlook (simulação)', inicio: i, fim: i + 36e5, diaInteiro: false, estado: 'busy', local: '', ligacao: '' });
+      }
+    }
+    return { ligado: true, modo: cal.modo, eventos };
+  }
+  const iso = (t) => new Date(t).toISOString();
+  const expandir = `singleValueExtendedProperties($filter=id eq '${PROP_HUBSPOT}')`;
+  const consulta = [
+    `startDateTime=${encodeURIComponent(iso(de))}`, `endDateTime=${encodeURIComponent(iso(ate))}`,
+    `$select=${encodeURIComponent('subject,start,end,isAllDay,showAs,location,isCancelled,sensitivity,webLink')}`,
+    `$expand=${encodeURIComponent(expandir)}`, '$orderby=start/dateTime', '$top=250',
+  ].join('&');
+  const r = await graph(env, utilizador.email, 'GET', `/me/calendarView?${consulta}`);
+  const eventos = (r.value || [])
+    .filter((e) => !e.isCancelled && !(e.singleValueExtendedProperties || []).length)
+    .map((e) => ({
+      id: String(e.id || ''),
+      titulo: e.sensitivity === 'private' ? 'Privado' : (e.subject || '(sem assunto)'),
+      inicio: Date.parse(e.start.dateTime + 'Z'),
+      fim: Date.parse(e.end.dateTime + 'Z'),
+      diaInteiro: e.isAllDay === true,
+      estado: e.showAs || '',
+      local: (e.location && e.location.displayName) || '',
+      ligacao: /^https:\/\//.test(e.webLink || '') ? e.webLink : '',
+    }));
+  return { ligado: true, modo: cal.modo, eventos, incompleto: Boolean(r['@odata.nextLink']) };
 }
 
 /* --- Eventos Outlook ligados às reuniões HubSpot (mapa em KV, sem propriedades novas no HubSpot) --- */

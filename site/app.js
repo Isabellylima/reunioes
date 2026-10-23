@@ -97,6 +97,33 @@
     return d.reunioes;
   }
 
+  // Agenda Outlook (só leitura). Esconde os eventos à mesma hora de uma reunião do HubSpot (vêm da sincronização do HubSpot).
+  async function eventosOutlook(de, ate, reunioes = []) {
+    if (!calendarioPronto()) return { eventos: [], erro: '' };
+    try {
+      const d = await api(`/api/calendario/eventos?de=${encodeURIComponent(de.toISOString())}&ate=${encodeURIComponent(ate.toISOString())}`);
+      return { eventos: d.eventos.filter((e) => !reunioes.some((m) => m.inicio === e.inicio && m.fim === e.fim)), erro: '' };
+    } catch (e) { return { eventos: [], erro: e.message }; }
+  }
+
+  function cartaoOutlook(e) {
+    const horas = e.diaInteiro ? '<strong>Dia</strong><span>inteiro</span>' : `<strong>${esc(hora(e.inicio))}</strong><span>${esc(hora(e.fim))}</span>`;
+    const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+    const tag = e.ligacao ? 'a' : 'div';
+    return `<${tag} class="cartao outlook"${destino}>
+      <div class="horas">${horas}</div>
+      <div class="corpo"><span class="etiqueta-outlook">Outlook</span><span class="titulo">${esc(e.titulo)}</span>${e.local ? `<span class="meta">${esc(e.local)}</span>` : ''}</div>
+    </${tag}>`;
+  }
+
+  // Reuniões do HubSpot e eventos Outlook juntos, por hora de início
+  const cartoesMisturados = (reunioes, eventos) => [
+    ...reunioes.map((m) => ({ t: m.inicio, html: cartao(m) })),
+    ...eventos.map((e) => ({ t: e.diaInteiro ? e.inicio - 1 : e.inicio, html: cartaoOutlook(e) })),
+  ].sort((a, b) => a.t - b.t).map((x) => x.html).join('');
+
+  const notaOutlook = (o) => (o.erro ? `<p class="nota">Agenda Outlook: ${esc(o.erro)}</p>` : '');
+
   async function atualizarContadorPendentes() {
     try {
       const d = await api('/api/reunioes/por-classificar');
@@ -115,6 +142,7 @@
       reunioesEntre(somarDias(hoje, 1), somarDias(hoje, 15)),
       api('/api/reunioes/por-classificar').then((d) => d.reunioes),
     ]);
+    const outlook = await eventosOutlook(hoje, somarDias(hoje, 1), doDia);
     const primeiroNome = String(estado.eu.nome || '').split(' ')[0];
     const saudacao = new Date().getHours() < 13 ? 'Bom dia' : (new Date().getHours() < 20 ? 'Boa tarde' : 'Boa noite');
     return `
@@ -127,9 +155,10 @@
       </div>
       <section class="lista-reunioes" aria-labelledby="t-hoje">
         <div class="cabecalho-seccao"><h2 id="t-hoje">Hoje</h2><a href="#/semana">Ver semana</a></div>
-        ${doDia.length ? doDia.map(cartao).join('') : '<p class="vazio">Sem reuniões hoje.</p>'}
+        ${doDia.length || outlook.eventos.length ? cartoesMisturados(doDia, outlook.eventos) : '<p class="vazio">Sem reuniões hoje.</p>'}
+        ${notaOutlook(outlook)}
       </section>
-      ${blocoCalendario()}
+      ${calendarioPronto() ? '' : blocoCalendario()}
       ${pendentes.length ? `<a class="faixa-ambar" href="#/por-classificar"><span><strong>${pendentes.length} ${pendentes.length === 1 ? 'reunião' : 'reuniões'} por classificar</strong>Já passaram e ainda não têm resultado</span><span aria-hidden="true">›</span></a>` : ''}
     `;
   }
@@ -149,10 +178,18 @@
     const v = estado.verificacao;
     const resultado = v ? (v.erro ? `<p class="nota">${esc(v.erro)}</p>` : `<p class="nota">Conta: ${esc(v.contaMicrosoft)} ${v.contaCorrespondeSessao ? '✓' : '✗ diferente da sessão'} · Criar eventos: ${v.podeCriarEventos ? '✓' : '✗'} · Teams: ${v.teamsDisponivel ? '✓' : '✗ não disponível'} · Permissões: ${esc((v.ambitosAutorizados || []).join(', ') || '—')}</p>`) : '';
     return `<section class="detalhe"><h2 class="cab-calendario">Calendário Outlook ligado</h2>
-      <p class="subtitulo">A app consulta a sua disponibilidade e cria os eventos que pedir.${simulacao}</p>
+      <p class="subtitulo">A app mostra a sua agenda Outlook no Início e na Semana, consulta a sua disponibilidade e cria os eventos que pedir.${simulacao}</p>
       ${c.modo === 'real' ? '<button type="button" class="botao" data-acao="verificar-calendario">Verificar ligação (sem criar eventos)</button>' : ''}
       ${resultado}
       <button type="button" class="botao-texto" data-acao="desligar-calendario">Desligar o calendário</button></section>`;
+  }
+
+  /* ---------- Ecrã: sincronização com Microsoft ---------- */
+  function ecraMicrosoft() {
+    const cab = `<div><h1 class="titulo-pagina">Sincronização com Microsoft</h1>
+      <p class="subtitulo">Ligação ao seu calendário Outlook: ver a agenda na app, verificar conflitos e criar eventos Outlook/Teams.</p></div>`;
+    if (calendario().modo === 'desligado') return cab + '<p class="vazio">A ligação ao calendário Outlook ainda não está ativa para a sua conta.</p>';
+    return cab + blocoCalendario();
   }
 
   /* ---------- Ecrã: semana ---------- */
@@ -160,6 +197,8 @@
     const segunda = somarDias(segundaDe(new Date()), estado.semana * 7);
     const domingoFim = somarDias(segunda, 7);
     const reunioes = await reunioesEntre(segunda, domingoFim);
+    const outlook = await eventosOutlook(segunda, domingoFim, reunioes);
+    const doDiaOutlook = (d) => outlook.eventos.filter((e) => e.inicio < somarDias(d, 1).getTime() && e.fim > d.getTime());
     const dias = Array.from({ length: 7 }, (_, i) => somarDias(segunda, i));
     const hojeTxt = inicioDoDia(new Date()).getTime();
     const titulo = `${fmt(segunda, { day: 'numeric', month: 'long' })} – ${fmt(somarDias(segunda, 6), { day: 'numeric', month: 'long', year: 'numeric' })}`;
@@ -181,12 +220,30 @@
       const dia = dias[estado.vistaDia] || dias[0];
       const doDia = reunioes.filter((m) => inicioDoDia(m.inicio).getTime() === dia.getTime());
       const seletor = `<div class="separadores" role="tablist" aria-label="Dia">${dias.map((d, i) => `<button type="button" role="tab" data-acao="escolher-dia" data-indice="${i}" aria-selected="${i === estado.vistaDia}">${esc(maiuscula(diaCurto(d)))}</button>`).join('')}</div>`;
-      return barra + seletor + `<div class="lista-reunioes">${doDia.length ? doDia.map(cartao).join('') : '<p class="vazio">Sem reuniões neste dia.</p>'}</div>`;
+      const evsDia = doDiaOutlook(dia);
+      return barra + seletor + `<div class="lista-reunioes">${doDia.length || evsDia.length ? cartoesMisturados(doDia, evsDia) : '<p class="vazio">Sem reuniões neste dia.</p>'}</div>` + notaOutlook(outlook);
     }
 
-    const cabecalhos = dias.map((d) => `<div class="cab-dia${d.getTime() === hojeTxt ? ' hoje' : ''}"><span>${esc(fmt(d, { weekday: 'short' }).replace('.', ''))}</span><strong>${d.getDate()}</strong></div>`).join('');
+    const cabecalhos = dias.map((d) => {
+      const diaInteiro = doDiaOutlook(d).filter((e) => e.diaInteiro).map((e) => `<small class="dia-inteiro">${esc(e.titulo)}</small>`).join('');
+      return `<div class="cab-dia${d.getTime() === hojeTxt ? ' hoje' : ''}"><span>${esc(fmt(d, { weekday: 'short' }).replace('.', ''))}</span><strong>${d.getDate()}</strong>${diaInteiro}</div>`;
+    }).join('');
     const horas = Array.from({ length: H_FIM - H_INICIO }, (_, i) => `<span class="hora" data-topo="${i * PX_HORA + 4}">${doisDigitos(H_INICIO + i)}:00</span>`).join('');
     const colunas = dias.map((d) => {
+      // Eventos Outlook por baixo das reuniões do HubSpot (as reuniões são desenhadas depois e ficam por cima)
+      const deOutlook = doDiaOutlook(d).filter((e) => !e.diaInteiro).map((e) => {
+        const ini = new Date(Math.max(e.inicio, d.getTime())), fim = new Date(Math.min(e.fim, somarDias(d, 1).getTime()));
+        const hIni = Math.max(ini.getHours() + ini.getMinutes() / 60, H_INICIO);
+        const hFim = Math.min(fim.getHours() + fim.getMinutes() / 60 || 24, H_FIM);
+        if (hFim <= H_INICIO || hIni >= H_FIM) return '';
+        const topo = (hIni - H_INICIO) * PX_HORA + 2;
+        const altura = Math.max((hFim - hIni) * PX_HORA - 4, 28);
+        const destino = e.ligacao ? ` href="${esc(e.ligacao)}" target="_blank" rel="noopener noreferrer"` : '';
+        const tag = e.ligacao ? 'a' : 'div';
+        return `<${tag} class="evento evento-outlook"${destino} data-topo="${topo}" data-altura="${altura}">
+          <strong>${esc(hora(e.inicio))}–${esc(hora(e.fim))}</strong><span>${esc(e.titulo)}</span><small>Outlook</small>
+        </${tag}>`;
+      }).join('');
       const evs = reunioes.filter((m) => inicioDoDia(m.inicio).getTime() === d.getTime()).map((m) => {
         const ini = new Date(m.inicio), fim = new Date(m.fim);
         const hIni = Math.max(ini.getHours() + ini.getMinutes() / 60, H_INICIO);
@@ -199,11 +256,14 @@
           <strong>${esc(hora(m.inicio))}–${esc(hora(m.fim))}</strong><span>${esc(quem)}</span><small>${esc([m.tipo ? m.tipo.replace('Reunião ', '') : 'Sem tipo', MODALIDADES[m.modalidade]].filter(Boolean).join(' · '))}${pendente ? ' · por classificar' : ''}</small>
         </a>`;
       }).join('');
-      return `<div class="coluna-dia${d.getTime() === hojeTxt ? ' hoje' : ''}">${evs}</div>`;
+      return `<div class="coluna-dia${d.getTime() === hojeTxt ? ' hoje' : ''}">${deOutlook}${evs}</div>`;
     }).join('');
-    const legenda = `<div class="legenda">${TIPOS.map((t) => `<span class="${CLASSE_TIPO[t]}"><i></i>${esc(t)}</span>`).join('')}<span><i class="pendente-legenda"></i>Tracejado: por classificar</span></div>`;
+    const legenda = `<div class="legenda">${TIPOS.map((t) => `<span class="${CLASSE_TIPO[t]}"><i></i>${esc(t)}</span>`).join('')}<span><i class="pendente-legenda"></i>Tracejado: por classificar</span>${calendarioPronto() ? '<span><i class="outlook-legenda"></i>Agenda Outlook</span>' : ''}</div>`;
+    const rodape = calendarioPronto()
+      ? `Mostra as reuniões do HubSpot e a sua agenda Outlook entre as ${H_INICIO}:00 e as ${H_FIM}:00.`
+      : `Mostra as reuniões do HubSpot entre as ${H_INICIO}:00 e as ${H_FIM}:00. Para ver também a agenda Outlook, ligue o calendário em «Gerir sincronização com Microsoft».`;
     return barra + `<div class="calendario"><div class="grelha-semana"><div></div>${cabecalhos}<div class="coluna-horas">${horas}</div>${colunas}</div></div>` + legenda
-      + `<p class="subtitulo">Mostra as reuniões do HubSpot entre as ${H_INICIO}:00 e as ${H_FIM}:00. Outros compromissos do Outlook não aparecem nesta fase.</p>`;
+      + notaOutlook(outlook) + `<p class="subtitulo">${rodape}</p>`;
   }
 
   /* ---------- Ecrã: lista ---------- */
@@ -555,6 +615,7 @@
       else if (nome === 'reuniao' && arg) html = await ecraReuniao(arg);
       else if (nome === 'por-classificar') html = await ecraPorClassificar();
       else if (nome === 'admin') html = await ecraAdmin();
+      else if (nome === 'microsoft') html = ecraMicrosoft();
       else html = await ecraInicio();
       if (meu !== pedidoDesenho) return;   // houve outra navegação entretanto
       const foco = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.campo : null;
@@ -708,7 +769,12 @@
     } catch (e) { mensagem(e.message, true); }
   });
 
+  // Menu da conta: fecha ao navegar ou ao clicar fora
+  const menuConta = document.querySelector('[data-menu-conta]');
+  document.addEventListener('click', (ev) => { if (menuConta.open && !menuConta.contains(ev.target)) menuConta.open = false; });
+
   window.addEventListener('hashchange', () => {
+    menuConta.open = false;
     if (!location.hash.startsWith('#/reuniao/')) detalhe = null;
     if (!location.hash.startsWith('#/agendar') && formulario && formulario.feito) formulario = null;
     if (!location.hash.startsWith('#/por-classificar')) classificadas = {};

@@ -76,6 +76,15 @@ function microsoftSimulada({ emailGraph = ANA, falharEventos = false } = {}) {
       estado.patch = { url: u, corpo: JSON.parse(op.body) };
       return new Response('{}');
     }
+    if (u.startsWith('https://graph.microsoft.com/v1.0/me/calendarView?') && metodo === 'GET') {
+      estado.calendarView = u;
+      return new Response(JSON.stringify({ value: [
+        { id: 'A1', subject: 'Reunião de equipa', start: { dateTime: '2026-11-10T09:00:00.0000000' }, end: { dateTime: '2026-11-10T09:30:00.0000000' }, isAllDay: false, showAs: 'busy', location: { displayName: 'Sala 1' }, sensitivity: 'normal', webLink: 'https://outlook.office365.com/owa/?itemid=A1' },
+        { id: 'A2', subject: 'Consulta médica', start: { dateTime: '2026-11-10T15:00:00.0000000' }, end: { dateTime: '2026-11-10T16:00:00.0000000' }, isAllDay: false, showAs: 'busy', sensitivity: 'private' },
+        { id: 'A3', subject: 'Cancelada', start: { dateTime: '2026-11-10T17:00:00.0000000' }, end: { dateTime: '2026-11-10T18:00:00.0000000' }, isCancelled: true },
+        { id: 'A4', subject: 'FERCOPOR | já no HubSpot', start: { dateTime: '2026-11-10T10:00:00.0000000' }, end: { dateTime: '2026-11-10T11:00:00.0000000' }, singleValueExtendedProperties: [{ value: '900001' }] },
+      ] }));
+    }
     if (u === 'https://graph.microsoft.com/v1.0/me/calendar/getSchedule') {
       const corpo = JSON.parse(op.body);
       const dia = corpo.startTime.dateTime.slice(0, 10);
@@ -237,6 +246,46 @@ test('Real: consentimento separado (só calendário), token cifrado em KV, criar
     assert.equal(ms.patch.corpo.start.dateTime, '2026-11-12T15:00:00.000');
     assert.equal(ms.eventos.length, 1);
     assert.equal(p.reuniao.resultado, 'SCHEDULED');
+  } finally { ms.repor(); }
+});
+
+test('Agenda Outlook: só leitura, sem canceladas nem eventos já ligados ao HubSpot; privados sem assunto', async () => {
+  const ms = microsoftSimulada();
+  try {
+    const env = envBase({ CALENDAR_MODE: 'real', CALENDAR_TEST_EMAILS: ANA });
+    const sessao = await entrar(env, ms);
+    const h = { Cookie: sessao };
+    const antes = await (await pedir(env, '/api/calendario/eventos?de=2026-11-09T00:00:00Z&ate=2026-11-16T00:00:00Z', { headers: h })).json();
+    assert.deepEqual(antes, { ligado: false, eventos: [] }, 'sem calendário ligado não chama o Graph');
+    assert.ok(!ms.chamadas.some((c) => c.includes('/calendarView')));
+
+    await ligarCalendario(env, sessao);
+    const r = await pedir(env, '/api/calendario/eventos?de=2026-11-09T00:00:00Z&ate=2026-11-16T00:00:00Z', { headers: h });
+    assert.equal(r.status, 200);
+    const d = await r.json();
+    assert.equal(d.ligado, true);
+    assert.deepEqual(d.eventos.map((e) => e.titulo), ['Reunião de equipa', 'Privado']);
+    assert.equal(d.eventos[0].inicio, Date.parse('2026-11-10T09:00:00Z'));
+    assert.equal(d.eventos[0].local, 'Sala 1');
+    assert.doesNotMatch(JSON.stringify(d), /Consulta médica/, 'eventos privados sem assunto');
+    assert.match(ms.calendarView, /startDateTime=2026-11-09T00%3A00%3A00.000Z/);
+    assert.ok(!ms.chamadas.some((c) => /^(POST|PATCH|DELETE) https:\/\/graph/.test(c)), 'só leituras ao Graph');
+
+    assert.equal((await pedir(env, '/api/calendario/eventos?de=2026-11-09T00:00:00Z&ate=2026-11-01T00:00:00Z', { headers: h })).status, 400);
+  } finally { ms.repor(); }
+});
+
+test('Agenda Outlook em simulação: compromisso fictício nos dias úteis, sem chamadas ao Graph', async () => {
+  const ms = microsoftSimulada();
+  try {
+    const env = envBase({ CALENDAR_MODE: 'simulacao' });
+    const sessao = await entrar(env, ms);
+    const h = { Cookie: sessao };
+    await pedir(env, '/auth/calendario/ligar', { headers: h });
+    const d = await (await pedir(env, '/api/calendario/eventos?de=2026-11-09T00:00:00Z&ate=2026-11-16T00:00:00Z', { headers: h })).json();
+    assert.equal(d.eventos.length, 5);
+    assert.equal(d.eventos[0].inicio, Date.parse('2026-11-09T13:00:00Z'));
+    assert.ok(!ms.chamadas.some((c) => c.includes('graph.microsoft.com')));
   } finally { ms.repor(); }
 });
 

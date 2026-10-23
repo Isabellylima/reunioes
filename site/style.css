@@ -211,6 +211,7 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 .cab-dia span { font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .cab-dia strong { font-size: 20px; font-weight: 800; }
 .cab-dia.hoje { background: var(--bronze-claro); color: var(--bronze-escuro); }
+.cab-dia .dia-inteiro { max-width: calc(100% - 8px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; color: #3B4A60; background: #F4F6F9; border: 1px dashed #9AA8BC; border-radius: 3px; padding: 1px 6px; }
 .coluna-horas, .coluna-dia { position: relative; height: 728px; }
 .coluna-dia { border-left: 1px solid var(--linha); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 55px, #EFEDE6 55px, #EFEDE6 56px); }
 .coluna-dia.hoje { background-color: #FBFAF6; }
@@ -241,8 +242,24 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 .caixa-tabela { overflow-x: auto; }
 
 /* ---------- Sessão ---------- */
-.sair { color: var(--creme); font-size: 14px; font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; padding: 0 6px; }
-.sair:hover { color: #FFFFFF; }
+.menu-conta { position: relative; }
+.menu-conta summary { list-style: none; cursor: pointer; border-radius: 22px; }
+.menu-conta summary::-webkit-details-marker { display: none; }
+.menu-conta[open] .avatar { background: var(--creme); color: var(--tinta); }
+.menu-conta-itens {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; min-width: 260px;
+  display: flex; flex-direction: column; background: var(--superficie); border: 1px solid var(--linha);
+  border-radius: var(--raio); box-shadow: 0 8px 24px rgba(0, 0, 0, .14); overflow: hidden;
+}
+.menu-conta-itens a { display: flex; align-items: center; min-height: 48px; padding: 0 16px; color: var(--tinta); text-decoration: none; font-size: 14px; font-weight: 600; border-bottom: 1px solid var(--linha); }
+.menu-conta-itens a:last-child { border-bottom: 0; }
+.menu-conta-itens a:hover, .menu-conta-itens a.ativo { background: var(--bronze-claro); }
+
+/* ---------- Agenda Outlook ---------- */
+.cartao.outlook { background: #F4F6F9; border-style: dashed; }
+.etiqueta-outlook { align-self: flex-start; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #3B5A85; }
+.evento.evento-outlook { background: #F4F6F9; color: #3B4A60; border: 1px dashed #9AA8BC; z-index: 0; }
+.legenda i.outlook-legenda { background: #F4F6F9; border: 1px dashed #9AA8BC; }
 /* ---------- Página de entrada ---------- */
 .pagina-entrada { padding-bottom: 0; background: var(--fundo); }
 .entrada-ecra { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }

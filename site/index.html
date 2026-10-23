@@ -24,8 +24,13 @@
     </nav>
     <div class="topo-acoes">
       <a class="botao botao-principal botao-topo" href="#/agendar">+ Agendar reunião</a>
-      <span class="avatar" data-avatar aria-hidden="true"></span>
-      <a class="sair" href="/auth/sair" data-sair hidden>Sair</a>
+      <details class="menu-conta" data-menu-conta>
+        <summary aria-label="Menu da conta"><span class="avatar" data-avatar aria-hidden="true"></span></summary>
+        <div class="menu-conta-itens">
+          <a href="#/microsoft" data-rota="microsoft">Gerir sincronização com Microsoft</a>
+          <a href="/auth/sair" data-sair hidden>Sair</a>
+        </div>
+      </details>
     </div>
   </header>
 
