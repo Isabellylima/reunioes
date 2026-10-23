@@ -193,24 +193,31 @@ test('5. Situação das Leads: só para o Ruben, com os três filtros', async ()
 });
 
 /* 6, 7 e 8. Negócios */
-test('6–8. Meus Negócios: proprietário do negócio, fase ganha, total histórico e mês atual em Lisboa', async () => {
+test('6–8. Meus Negócios: proprietário do negócio e «Status do Negócio» = Concluído; total histórico e mês atual', async () => {
   const f = hubspotFalso();
   const { dados } = await inicioComo('ana.teste@fercopor.pt', f);
   assert.deepEqual(dados.negocios, { fechadosTotal: 12, fechadosMes: 2 });
   const negocios = f.pesquisas.filter((x) => x.objeto === 'deals');
   assert.equal(negocios.length, 2);
   for (const n of negocios) {
-    assert.ok(temFiltro(n, 'hubspot_owner_id', ANA));
-    assert.ok(temFiltro(n, 'hs_is_closed_won', 'true'));
-    assert.ok(temFiltro(n, 'pipeline', 'default'));
-    assert.ok(!temFiltro(n, 'dealstage'), 'não conta perdidos nem em negociação');
+    for (const g of n.corpo.filterGroups) {
+      assert.ok(g.filters.some((x) => x.propertyName === 'hubspot_owner_id' && x.value === ANA), 'cada grupo filtra o proprietário do negócio');
+      assert.ok(g.filters.some((x) => x.propertyName === 'status_do_negocio' && x.values.includes('Vendida')), 'cada grupo filtra o status Concluído');
+    }
+    for (const nome of ['dealstage', 'pipeline', 'hs_is_closed_won']) assert.ok(!temFiltro(n, nome), `não usa ${nome}`);
   }
-  const total = negocios.find((n) => !temFiltro(n, 'closedate'));
-  assert.ok(total, 'total sem limite de mês ou ano');
-  const mesF = filtrosDe(negocios.find((n) => temFiltro(n, 'closedate'))).find((x) => x.propertyName === 'closedate');
-  assert.equal(mesF.operator, 'BETWEEN');
-  assert.equal(mesF.value, String(p.inicioMes));
-  assert.ok(Number(mesF.highValue) <= Date.now() && Number(mesF.highValue) > p.inicioMes, 'até ao momento presente');
+  const total = negocios.find((n) => !temFiltro(n, 'closedate') && !temFiltro(n, 'data_cpcv'));
+  assert.ok(total && total.corpo.filterGroups.length === 1, 'total sem limite de mês ou ano');
+  const mesP = negocios.find((n) => n.corpo.filterGroups.length === 2);
+  const [porCpcv, porFecho] = mesP.corpo.filterGroups.map((g) => g.filters);
+  const cpcv = porCpcv.find((x) => x.propertyName === 'data_cpcv');
+  assert.equal(cpcv.operator, 'BETWEEN');
+  assert.equal(cpcv.value, String(Date.UTC(Number(ano), Number(mes) - 1, 1)));
+  assert.equal(cpcv.highValue, String(p.hojeUtc));
+  assert.ok(porFecho.some((x) => x.propertyName === 'data_cpcv' && x.operator === 'NOT_HAS_PROPERTY'), 'a data de fecho só conta quando não há Data CPCV (sem duplicar)');
+  const fecho = porFecho.find((x) => x.propertyName === 'closedate');
+  assert.equal(fecho.value, String(p.inicioMes));
+  assert.ok(Number(fecho.highValue) <= Date.now() && Number(fecho.highValue) > p.inicioMes, 'até ao momento presente');
 });
 
 /* 9 e 10. Reuniões realizadas */
@@ -276,4 +283,73 @@ test('Demo: o painel responde sem HubSpot e sem leads para quem não está autor
   assert.equal(d.leads, null);
   assert.ok(d.lembretes.aniversarios.length && d.negocios && d.reunioes.porTipo.length === 5);
   assert.equal(d.lembretes.aniversarios[0].url, null);
+});
+
+/* Convites a outras pessoas */
+test('Equipa: lista os utilizadores do HubSpot sem o próprio e com a Gabriela Matos pré-selecionada', async () => {
+  limparCachesPainel();
+  const f = hubspotFalso();
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, op) => {
+    if (String(url).includes('/crm/v3/owners/?limit=100')) {
+      return new Response(JSON.stringify({ results: [
+        { id: ANA, email: 'ana.teste@fercopor.pt', firstName: 'Ana', lastName: 'Teste' },
+        { id: '758451159', email: 'gabriela.matos@fercopor.pt', firstName: 'Gabriela', lastName: 'Matos' },
+      ] }));
+    }
+    return f.fetch(url, op);
+  };
+  try {
+    const r = await worker.fetch(new Request('https://app.exemplo/api/equipa', { headers: { 'Cf-Access-Jwt-Assertion': await sessao('ana.teste@fercopor.pt') } }), env());
+    const d = await r.json();
+    assert.deepEqual(d.pessoas.map((x) => x.email), ['gabriela.matos@fercopor.pt']);
+    assert.deepEqual(d.predefinidos, ['gabriela.matos@fercopor.pt']);
+  } finally { globalThis.fetch = original; }
+});
+
+test('Convidar outras pessoas: validação, participantes no HubSpot, notas e convite Outlook', async () => {
+  const { validarNovaReuniao } = _teste;
+  const base = { empreendimento: 'PURE', tipo: 'Reunião Comercial', modalidade: 'presencial', inicio: '2026-10-27T10:00:00Z', fim: '2026-10-27T11:00:00Z', contactoId: '1001' };
+  assert.deepEqual(validarNovaReuniao({ ...base, outrosConvidados: [{ email: 'Gabriela.Matos@fercopor.pt' }, { email: 'gabriela.matos@fercopor.pt' }] }, ['PURE']).outrosConvidados,
+    [{ email: 'gabriela.matos@fercopor.pt', nome: 'gabriela.matos@fercopor.pt' }]);
+  assert.throws(() => validarNovaReuniao({ ...base, outrosConvidados: [{ email: 'sem-arroba' }] }, ['PURE']));
+  assert.throws(() => validarNovaReuniao({ ...base, outrosConvidados: Array.from({ length: 16 }, (_, i) => ({ email: `p${i}@exemplo.pt` })) }, ['PURE']));
+
+  // Modo demo com calendário em simulação: a reunião guarda os participantes da equipa e as notas listam os convidados
+  limparCachesPainel();
+  const e = { DEMO_USER_EMAIL: 'ana.teste@fercopor.pt', ADMIN_EMAILS: 'ana.teste@fercopor.pt', REUNIOES_KV: kvMemoria(), ASSETS: { fetch: async () => new Response('x') } };
+  const corpo = { ...base, inicio: '2026-11-05T10:00:00Z', fim: '2026-11-05T11:00:00Z', outrosConvidados: [{ email: 'gabriela.matos@fercopor.pt' }, { email: 'arquiteto@exemplo.pt', nome: 'Arquiteto' }] };
+  const r = await worker.fetch(new Request('https://app.exemplo/api/reunioes', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'teste-convidados-0001' }, body: JSON.stringify(corpo) }), e);
+  assert.equal(r.status, 201);
+  const { reuniao } = await r.json();
+  assert.deepEqual(reuniao.participantes, ['758451159']);
+  assert.match(reuniao.notas, /Convidados: Gabriela Matos \(gabriela\.matos@fercopor\.pt\), Arquiteto \(arquiteto@exemplo\.pt\)/);
+});
+
+test('HubSpot: a reunião leva os participantes da equipa (hs_attendee_owner_ids) e as notas com os convidados', async () => {
+  limparCachesPainel();
+  const f = hubspotFalso();
+  let criada = null;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, op = {}) => {
+    const u = String(url);
+    if (u.includes('/crm/v3/owners/?limit=100')) return new Response(JSON.stringify({ results: [{ id: '758451159', email: 'gabriela.matos@fercopor.pt', firstName: 'Gabriela', lastName: 'Matos' }] }));
+    if (u.endsWith('/crm/v3/properties/meetings/empreendimento')) return new Response(JSON.stringify({ options: [{ value: 'PURE', label: 'PURE' }] }));
+    if (u.endsWith('/crm/v3/properties/meetings/tipologia')) return new Response(JSON.stringify({ options: [] }));
+    if (u.endsWith('/crm/v3/objects/contacts/batch/read')) return new Response(JSON.stringify({ results: [{ id: '2001', properties: { firstname: 'Maria', lastname: 'Cliente', tipo_de_contacto: 'Lead' } }] }));
+    if ((op.method || 'GET') === 'POST' && u.endsWith('/crm/v3/objects/meetings')) { criada = JSON.parse(op.body); return new Response(JSON.stringify({ id: '778' }), { status: 201 }); }
+    if (u.includes('/crm/v3/objects/meetings/778?')) return new Response(JSON.stringify({ id: '778', properties: { ...criada.properties } }));
+    return f.fetch(url, op);
+  };
+  try {
+    const corpo = { contactoId: '2001', empreendimento: 'PURE', tipo: 'Reunião Comercial', modalidade: 'presencial', inicio: '2026-11-04T10:00:00Z', fim: '2026-11-04T11:00:00Z',
+      outrosConvidados: [{ email: 'gabriela.matos@fercopor.pt' }, { email: 'externo@exemplo.pt' }] };
+    const r = await worker.fetch(new Request('https://app.exemplo/api/reunioes', { method: 'POST', body: JSON.stringify(corpo),
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'teste-convidados-hubspot-1', 'Cf-Access-Jwt-Assertion': await sessao('ana.teste@fercopor.pt') } }),
+      { ...env(), HUBSPOT_WRITE_ENABLED: 'true' });
+    assert.equal(r.status, 201);
+    assert.equal(criada.properties.hs_attendee_owner_ids, '758451159');
+    assert.match(criada.properties.hs_internal_meeting_notes, /Convidados: Gabriela Matos \(gabriela\.matos@fercopor\.pt\), externo@exemplo\.pt/);
+    assert.deepEqual(criada.associations.map((x) => x.to.id), ['2001']);   // os convidados não são associados como contactos
+  } finally { globalThis.fetch = original; }
 });

@@ -157,10 +157,16 @@ O Início mostra, por esta ordem: boas-vindas, «+ Agendar reunião», resumo (H
 | Leads recebidas no mês | `tipo_de_contacto` ∋ Lead, `proprietario_do_acompanhamento` = utilizador, `createdate` no mês |
 | Leads com interesse | idem, `interesse` ∈ Interessado c/condição · c/condição noutros projetos · condição indefinida (acumulado) |
 | Novos acompanhamentos | idem, `status_atendimento` = Novo (situação atual) |
-| Negócios fechados | `hubspot_owner_id` = utilizador, `hs_is_closed_won` = true, `pipeline` ∈ `DEALS_PIPELINES`; total e `closedate` no mês até agora |
+| Negócios fechados | `hubspot_owner_id` = utilizador e `status_do_negocio` = Concluído (`Vendida`), sem olhar à fase do pipeline. No mês: `data_cpcv` no mês; sem Data CPCV, `closedate` no mês até agora |
 | Reuniões realizadas | `hubspot_owner_id` = utilizador, `hs_meeting_outcome` = COMPLETED, início no mês; uma linha por opção de `hs_activity_type` e «Sem tipo definido» |
 
-Variáveis opcionais (Text): `LEADS_OWNER_IDS` (omissão `77041306`, Ruben Costa), `DEALS_PIPELINES` (omissão `default`, Pipeline de Vendas), `HUBSPOT_PORTAL_ID` (omissão `27006740`, para as ligações às fichas).
+Variáveis opcionais (Text): `LEADS_OWNER_IDS` (omissão `77041306`, Ruben Costa), `DEALS_STATUS_FECHADO` (omissão `Vendida`; vários separados por vírgulas, ex. `Vendida,Permuta`), `HUBSPOT_PORTAL_ID` (omissão `27006740`, para as ligações às fichas).
+
+## Agendar: convidar outras pessoas
+
+Além do contacto, o coordenador pode convidar pessoas da equipa (utilizadores ativos do HubSpot) ou qualquer outro e-mail. A **Gabriela Matos** vem pré-selecionada em cada nova reunião e pode ser retirada (variável `CONVIDADOS_PREDEFINIDOS`, omissão `gabriela.matos@fercopor.pt`).
+- **HubSpot:** as pessoas da equipa ficam como participantes da reunião (`hs_attendee_owner_ids`); todos os convidados ficam na linha `Convidados:` das notas internas. Não são criados contactos.
+- **Outlook:** com o evento Outlook ligado, todos recebem o convite. Sem evento Outlook, nenhum convite é enviado.
 
 A Private App do HubSpot tem de poder **ler** contactos, negócios (`crm.objects.deals.read`) e reuniões. Se faltar uma permissão, só essa secção mostra um aviso.
 

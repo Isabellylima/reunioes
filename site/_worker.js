@@ -191,6 +191,10 @@ async function tratar(request, env) {
   if (m === 'POST' && caminho === '/api/calendario/desligar') {
     return desligarCalendario(env, utilizador);
   }
+  if (m === 'GET' && caminho === '/api/equipa') {
+    const pessoas = (await fonte.equipa()).filter((x) => x.email !== utilizador.email);
+    return json({ pessoas, predefinidos: listaEmails(env.CONVIDADOS_PREDEFINIDOS || CONVIDADOS_PREDEFINIDOS_OMISSAO).filter((e) => e !== utilizador.email) });
+  }
   if (m === 'GET' && caminho === '/api/inicio') {
     return json(await painelInicio(env, fonte, utilizador));
   }
@@ -687,7 +691,15 @@ async function criarReuniao(request, env, fonte, utilizador) {
 
   const titulo = pedido.titulo || gerarTitulo(pedido.empreendimento, principal, cliente);
   const tipologia = tipologias.find((t) => t.valor === pedido.tipologia);
-  const notas = gerarNotas({ ...pedido, tipologiaNome: tipologia ? tipologia.nome : '' }, utilizador);
+  // Convidados da equipa: os nomes vêm do HubSpot e ficam como participantes da reunião
+  let equipa = [];
+  if (pedido.outrosConvidados.length) { try { equipa = await fonte.equipa(); } catch { equipa = []; } }
+  const outros = pedido.outrosConvidados.map((c) => {
+    const pessoa = equipa.find((x) => x.email === c.email);
+    return pessoa ? { email: c.email, nome: pessoa.nome, ownerId: pessoa.ownerId } : c;
+  });
+  const participantes = [...new Set(outros.map((c) => c.ownerId).filter((id) => id && id !== String(utilizador.ownerId)))];
+  const notas = gerarNotas({ ...pedido, tipologiaNome: tipologia ? tipologia.nome : '', outrosConvidados: outros }, utilizador);
 
   const criada = await fonte.criarReuniao({
     ownerId: utilizador.ownerId,
@@ -702,6 +714,7 @@ async function criarReuniao(request, env, fonte, utilizador) {
     empreendimento: pedido.empreendimento,
     tipologia: pedido.tipologia,
     orcamento: pedido.orcamento,
+    participantes,
     contactos: ids,
   });
   await guardarIdempotencia(env, utilizador, chave, criada.id);
@@ -711,7 +724,10 @@ async function criarReuniao(request, env, fonte, utilizador) {
   let outlook = { estado: 'nao_pedido' };
   let final = criada;
   if (pedido.outlook) {
-    const convidados = contactos.filter((c) => pedido.convidar.includes(String(c.id)) && c.email);
+    const convidados = [
+      ...contactos.filter((c) => pedido.convidar.includes(String(c.id)) && c.email),
+      ...outros.filter((c) => c.email !== utilizador.email),
+    ];
     outlook = await criarEventoOutlook(env, utilizador, criada, convidados, chave);
     if (outlook.ligacao && !criada.ligacao) {
       final = await fonte.atualizarReuniao(criada.id, {
@@ -811,6 +827,7 @@ function validarNovaReuniao(c, empreendimentos, tipologias = []) {
     empreendimento, tipo, modalidade, inicio, fim, contactoId, clienteId,
     outlook: c.outlook === true,
     convidar,
+    outrosConvidados: validarOutrosConvidados(c.outrosConvidados),
     local: limparTexto(c.local, 300),
     ligacao,
     tipologia: validarTipologia(c.tipologia, tipologias),
@@ -818,6 +835,23 @@ function validarNovaReuniao(c, empreendimentos, tipologias = []) {
     observacoes: limparTexto(c.observacoes, 2000),
     titulo: limparTexto(c.titulo, 200),
   };
+}
+
+// Outras pessoas convidadas (equipa ou e-mail externo): até 15, e-mails válidos, sem repetidos
+const PADRAO_EMAIL = /^[^\s@<>(),;:"\[\]]+@[^\s@<>(),;:"\[\]]+\.[a-z]{2,}$/i;
+function validarOutrosConvidados(lista) {
+  if (lista == null) return [];
+  if (!Array.isArray(lista) || lista.length > 15) throw new ErroHttp(400, 'Pode convidar até 15 pessoas.');
+  const vistos = new Set();
+  const saida = [];
+  for (const item of lista) {
+    const email = limparTexto(item && item.email, 200).toLowerCase();
+    if (!PADRAO_EMAIL.test(email)) throw new ErroHttp(400, `E-mail de convidado inválido: ${email || '(vazio)'}`);
+    if (vistos.has(email)) continue;
+    vistos.add(email);
+    saida.push({ email, nome: limparTexto(item.nome, 120) || email });
+  }
+  return saida;
 }
 
 // Tipologia: vazia ou uma das opções da propriedade «Tipologia» das reuniões no HubSpot
@@ -867,6 +901,7 @@ function gerarNotas(p, utilizador) {
   if (p.orcamento) linhas.push(`Orçamento: ${formatarEuros(p.orcamento)}`);
   if (p.observacoes) linhas.push(`Observações: ${p.observacoes}`);
   if (p.ligacao) linhas.push(`Ligação: ${p.ligacao}`);
+  if (p.outrosConvidados && p.outrosConvidados.length) linhas.push(`Convidados: ${p.outrosConvidados.map((c) => (c.nome && c.nome !== c.email ? `${c.nome} (${c.email})` : c.email)).join(', ')}`);
   linhas.push(`Agendada na app por ${utilizador.nome}`);
   return linhas.join('\n');
 }
@@ -1044,16 +1079,36 @@ function fonteHubSpot(env) {
       return { recebidasMes, comInteresse, novosAcompanhamentos };
     },
 
-    // Negócios: «Deal owner» (hubspot_owner_id) = utilizador, fase ganha, só nos pipelines comerciais
-    async indicadoresNegocios(ownerId, p, pipelines) {
+    // Negócios: «Deal owner» (hubspot_owner_id) = utilizador e «Status do Negócio» fechado (não usa a fase do pipeline)
+    async indicadoresNegocios(ownerId, p, estados) {
       const base = [
         { propertyName: 'hubspot_owner_id', operator: 'EQ', value: String(ownerId) },
-        { propertyName: 'hs_is_closed_won', operator: 'EQ', value: 'true' },
-        { propertyName: 'pipeline', operator: 'IN', values: pipelines },
+        { propertyName: 'status_do_negocio', operator: 'IN', values: estados },
       ];
       const fechadosTotal = await contar('deals', [{ filters: base }]);
-      const fechadosMes = await contar('deals', [{ filters: [...base, { propertyName: 'closedate', operator: 'BETWEEN', value: String(p.inicioMes), highValue: String(p.agora) }] }]);
+      // No mês: pela «Data CPCV»; os negócios sem Data CPCV contam pela data de fecho. Os dois grupos não se sobrepõem.
+      const fechadosMes = await contar('deals', [
+        { filters: [...base, { propertyName: 'data_cpcv', operator: 'BETWEEN', value: String(p.inicioMesUtc), highValue: String(p.hojeUtc) }] },
+        { filters: [...base, { propertyName: 'data_cpcv', operator: 'NOT_HAS_PROPERTY' }, { propertyName: 'closedate', operator: 'BETWEEN', value: String(p.inicioMes), highValue: String(p.agora) }] },
+      ]);
       return { fechadosTotal, fechadosMes };
+    },
+
+    // Equipa FERCOPOR (utilizadores ativos do HubSpot), para convidar para reuniões; guardada 10 minutos
+    async equipa() {
+      if (equipaCache && equipaCache.exp > Date.now()) return equipaCache.pessoas;
+      const pessoas = [];
+      let after = '';
+      for (let i = 0; i < 10; i++) {
+        const r = await pedir('GET', `/crm/v3/owners/?limit=100&archived=false${after ? `&after=${encodeURIComponent(after)}` : ''}`);
+        for (const o of (r && r.results) || []) {
+          if (o.email) pessoas.push({ ownerId: String(o.id), email: String(o.email).toLowerCase(), nome: [o.firstName, o.lastName].filter(Boolean).join(' ') || o.email });
+        }
+        after = r && r.paging && r.paging.next && r.paging.next.after;
+        if (!after) break;
+      }
+      equipaCache = { exp: Date.now() + 600000, pessoas };
+      return pessoas;
     },
 
     // Reuniões concluídas do utilizador no mês, por valor de «Call and meeting type»
@@ -1148,6 +1203,7 @@ function fonteHubSpot(env) {
       if (r.empreendimento) propriedades.empreendimento = r.empreendimento;
       if (r.tipologia) propriedades.tipologia = r.tipologia;
       if (r.orcamento) propriedades.orcamento = String(r.orcamento);
+      if (r.participantes && r.participantes.length) propriedades.hs_attendee_owner_ids = r.participantes.join(';');
       const corpo = () => ({
         properties: propriedades,
         associations: r.contactos.map((id) => ({
@@ -1160,11 +1216,11 @@ function fonteHubSpot(env) {
         o = await pedir('POST', '/crm/v3/objects/meetings', corpo());
       } catch (e) {
         // Se o HubSpot recusar os campos próprios (400: nada foi criado), grava sem eles: já estão nas notas internas
-        const proprios = ['empreendimento', 'tipologia', 'orcamento'].filter((k) => k in propriedades);
+        const proprios = ['empreendimento', 'tipologia', 'orcamento', 'hs_attendee_owner_ids'].filter((k) => k in propriedades);
         if (!(e instanceof ErroHubSpot && e.estadoHubSpot === 400 && proprios.length)) throw e;
         for (const k of proprios) delete propriedades[k];
         o = await pedir('POST', '/crm/v3/objects/meetings', corpo());
-        aviso = `Os campos Empreendimento, Tipologia e Orçamento ficaram só nas notas internas. ${e.message}`;
+        aviso = `Os campos Empreendimento, Tipologia, Orçamento e participantes da equipa ficaram só nas notas internas. ${e.message}`;
       }
       const criada = await this.lerReuniao(o.id);
       return aviso ? { ...criada, aviso } : criada;
@@ -1214,6 +1270,10 @@ function fonteDemo() {
     },
     async indicadoresLeads() { return { recebidasMes: 14, comInteresse: 37, novosAcompanhamentos: 6 }; },
     async indicadoresNegocios() { return { fechadosTotal: 9, fechadosMes: 1 }; },
+    async equipa() {
+      return [['758451159', 'Gabriela Matos'], ['77041306', 'Ruben Costa'], ['847260113', 'Carla Barros'], ['268831414', 'Marta Sousa']]
+        .map(([ownerId, nome]) => ({ ownerId, nome, email: normalizar(nome).replace(/\s+/g, '.') + '@fercopor.pt' }));
+    },
     async reunioesRealizadas(ownerId, p) {
       return contarPorTipo(d.reunioes.filter((r) => r.ownerId === String(ownerId) && r.resultado === 'COMPLETED' && r.inicio >= p.inicioMes && r.inicio < p.fimMes).map((r) => r.tipo));
     },
@@ -1241,6 +1301,7 @@ function fonteDemo() {
         ownerId: String(r.ownerId), notas: r.notas, local: r.local, modalidade: r.modalidade, ligacao: r.ligacao,
         origem: 'APP_DEMO', contactos: r.contactos.map(String),
         empreendimento: r.empreendimento || '', tipologia: r.tipologia || '', orcamento: r.orcamento || null,
+        participantes: r.participantes || [],
       };
       d.reunioes.push(nova);
       return comContactos(nova);
@@ -1325,19 +1386,21 @@ function resumoTexto(t) {
      Contactos  proprietario_do_acompanhamento (lista com IDs de proprietário), data_de_nascimento (data),
                 status_atendimento = "Contactar futuramente" | "Novo", data_do_proximo_contacto (data),
                 tipo_de_contacto ∋ "Lead", interesse ∈ INTERESSES_COM_INTERESSE, createdate
-     Negócios   hubspot_owner_id, hs_is_closed_won = true (fase «Negócio Fechado com Sucesso», closedwon),
-                pipeline ∈ DEALS_PIPELINES (omissão: "default" = Pipeline de Vendas), closedate
+     Negócios   hubspot_owner_id, status_do_negocio ∈ DEALS_STATUS_FECHADO (omissão "Vendida" = Concluído);
+                no mês: data_cpcv (ou closedate quando não há Data CPCV)
      Reuniões   hubspot_owner_id, hs_meeting_outcome = COMPLETED, hs_meeting_start_time, hs_activity_type
    Os indicadores de leads só são calculados para os proprietários em LEADS_OWNER_IDS (omissão: Ruben Costa). */
 
 const PORTAL_HUBSPOT_OMISSAO = '27006740';
+const CONVIDADOS_PREDEFINIDOS_OMISSAO = 'gabriela.matos@fercopor.pt';   // pré-selecionada em cada nova reunião (pode ser retirada)
 const LEADS_OWNER_IDS_OMISSAO = '77041306';   // Ruben Costa
-const PIPELINES_OMISSAO = 'default';           // Pipeline de Vendas
+const ESTADOS_FECHADO_OMISSAO = 'Vendida';     // «Status do Negócio» = Concluído (valor interno «Vendida»)
 const INTERESSES_COM_INTERESSE = ['Interessado c/condição', 'Interessado c/condição noutros projetos', 'Interessado condição indefinida'];
 const PAINEL_VALIDADE_MS = 120000;             // cada utilizador: no máximo uma ronda de consultas a cada 2 minutos
 const painelCache = new Map();
 let tiposReuniaoCache = null;
-function limparCachesPainel() { painelCache.clear(); tiposReuniaoCache = null; }
+let equipaCache = null;
+function limparCachesPainel() { painelCache.clear(); tiposReuniaoCache = null; equipaCache = null; }
 
 function partesLisboa(ms) {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Lisbon', year: 'numeric', month: '2-digit', day: '2-digit' })
@@ -1357,6 +1420,7 @@ function periodoLisboa(agora) {
     agora,
     hoje: h.data,
     hojeUtc: Date.UTC(h.ano, h.mes - 1, h.dia),   // as propriedades de data do HubSpot guardam a meia-noite UTC
+    inicioMesUtc: Date.UTC(h.ano, h.mes - 1, 1),
     mes: h.mes, dia: h.dia, ano: h.ano,
     inicioMes: meiaNoiteLisboa(h.ano, h.mes, 1),
     fimMes: meiaNoiteLisboa(h.ano, h.mes + 1, 1),
@@ -1398,7 +1462,7 @@ async function painelInicio(env, fonte, utilizador, agora = Date.now()) {
   const portal = String(env.HUBSPOT_PORTAL_ID || PORTAL_HUBSPOT_OMISSAO);
   const fichaContacto = (id) => (fonte.modo === 'hubspot' ? `https://app.hubspot.com/contacts/${portal}/record/0-1/${encodeURIComponent(id)}` : null);
   const verLeads = listaIds(env.LEADS_OWNER_IDS || LEADS_OWNER_IDS_OMISSAO).includes(ownerId);
-  const pipelines = listaIds(env.DEALS_PIPELINES || PIPELINES_OMISSAO);
+  const estadosFechado = listaIds(env.DEALS_STATUS_FECHADO || ESTADOS_FECHADO_OMISSAO);
   const erros = {};
   // Secções em sequência (o HubSpot limita as pesquisas por segundo); uma falha não impede as outras
   const seccao = async (nome, fn) => {
@@ -1417,7 +1481,7 @@ async function painelInicio(env, fonte, utilizador, agora = Date.now()) {
     };
   });
   const leads = verLeads ? await seccao('leads', () => fonte.indicadoresLeads(ownerId, p)) : null;
-  const negocios = await seccao('negocios', () => fonte.indicadoresNegocios(ownerId, p, pipelines));
+  const negocios = await seccao('negocios', () => fonte.indicadoresNegocios(ownerId, p, estadosFechado));
   const reunioes = await seccao('reunioes', async () => {
     const [contagem, tipos] = [await fonte.reunioesRealizadas(ownerId, p), await fonte.tiposReuniao()];
     const conhecidos = new Set(tipos.map((t) => t.valor));

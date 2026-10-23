@@ -351,3 +351,11 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 @media (min-width: 900px) {
   .realizadas { grid-template-columns: minmax(180px, 240px) 1fr; align-items: start; }
 }
+
+/* ---------- Agendar: outras pessoas convidadas ---------- */
+.convidados { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.convidados li { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--bronze-claro); border: 1px solid var(--linha); border-radius: var(--raio-pequeno); padding: 6px 6px 6px 12px; }
+.convidados li > span { display: flex; flex-direction: column; min-width: 0; }
+.convidados strong { font-size: 14px; }
+.convidados small { font-size: 12px; color: var(--texto-3); overflow-wrap: anywhere; }
+.linha-email { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }

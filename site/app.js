@@ -14,7 +14,7 @@
   const H_INICIO = 8, H_FIM = 21, PX_HORA = 56;
 
   const conteudo = document.getElementById('conteudo');
-  const estado = { eu: null, empreendimentos: [], tipologias: [], semana: 0, vistaDia: null, separador: 'hoje', pendentes: null };
+  const estado = { eu: null, empreendimentos: [], tipologias: [], equipa: [], predefinidos: [], semana: 0, vistaDia: null, separador: 'hoje', pendentes: null };
 
   /* ---------- Utilitários ---------- */
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -359,7 +359,33 @@
       data: dataInput(amanha), inicio: '10:00', fim: '11:00', local: '', ligacao: '',
       tipologia: '', orcamento: '', observacoes: '', titulo: '', tituloManual: false, mais: false, aEnviar: false, feito: null,
       outlook: calendarioPronto(), convidar: {}, disponibilidade: null, resultadoOutlook: null,
+      // Outras pessoas convidadas: começa com as predefinidas (Gabriela Matos), que se podem retirar
+      outros: estado.predefinidos.map(pessoaPorEmail), novoEmail: '',
     };
+  }
+
+  function pessoaPorEmail(email) {
+    const p = estado.equipa.find((x) => x.email === email);
+    return p ? { email: p.email, nome: p.nome } : { email, nome: email };
+  }
+
+  function blocoConvidados(f) {
+    const escolhidos = new Set(f.outros.map((c) => c.email));
+    const disponiveis = estado.equipa.filter((p) => !escolhidos.has(p.email));
+    const comOutlook = calendarioPronto() && f.outlook;
+    return `<fieldset><legend>Convidar outras pessoas</legend>
+      ${f.outros.length ? `<ul class="convidados">${f.outros.map((c) => `<li><span><strong>${esc(c.nome)}</strong>${c.nome !== c.email ? `<small>${esc(c.email)}</small>` : ''}</span><button type="button" class="botao-texto" data-acao="remover-convidado" data-email="${esc(c.email)}" aria-label="Retirar ${esc(c.nome)}">Retirar</button></li>`).join('')}</ul>` : '<p class="subtitulo">Ninguém além do contacto.</p>'}
+      ${disponiveis.length ? `<label class="campo">Adicionar da equipa FERCOPOR
+        <select data-campo="adicionar-equipa"><option value="">Escolher pessoa…</option>${disponiveis.map((p) => `<option value="${esc(p.email)}">${esc(p.nome)}</option>`).join('')}</select>
+      </label>` : ''}
+      <div class="linha-email">
+        <label class="campo">Outro e-mail<input type="email" data-campo="novoEmail" value="${esc(f.novoEmail)}" maxlength="200" placeholder="nome@exemplo.pt" autocomplete="off"></label>
+        <button type="button" class="botao" data-acao="adicionar-email">Adicionar</button>
+      </div>
+      <p class="subtitulo">${comOutlook
+        ? `Recebem o convite do Outlook com o contacto.${calendario().modo === 'simulacao' ? ' Modo de simulação: nenhum convite é enviado.' : ''}`
+        : 'Os convites são enviados pelo Outlook: sem o evento Outlook, ficam só registados na reunião do HubSpot.'}</p>
+    </fieldset>`;
   }
 
   function tituloSugerido(f) {
@@ -452,6 +478,8 @@
             : '<p class="subtitulo">Ligue o seu calendário na página inicial para criar o evento Outlook.</p>'}
         </fieldset>` : ''}
 
+        ${blocoConvidados(f)}
+
         <button type="button" class="botao" data-acao="mais" aria-expanded="${f.mais}">${f.mais ? '−' : '+'} Mais detalhes (tipologia, orçamento, notas)</button>
         ${f.mais ? `<div class="grelha-2">
             <label class="campo">Tipologia
@@ -542,6 +570,7 @@
         titulo: f.tituloManual ? f.titulo : '',
         outlook: Boolean(f.outlook && calendarioPronto()),
         convidar: Object.keys(f.convidar).filter((id) => f.convidar[id]),
+        outrosConvidados: f.outros.map((c) => ({ email: c.email, nome: c.nome })),
       };
       const { reuniao, outlook, aviso } = await api('/api/reunioes', { method: 'POST', body: corpo, headers: { 'Idempotency-Key': f.chave } });
       f.feito = reuniao;
@@ -714,6 +743,14 @@
         case 'separador': location.hash = `#/lista/${alvo.dataset.id}`; return;
         case 'modalidade': f.modalidade = alvo.dataset.id; f.local = ''; f.ligacao = ''; return desenhar();
         case 'mais': f.mais = !f.mais; return desenhar();
+        case 'remover-convidado': f.outros = f.outros.filter((c) => c.email !== alvo.dataset.email); return desenhar();
+        case 'adicionar-email': {
+          const email = String(f.novoEmail || '').trim().toLowerCase();
+          if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) return mensagem('Escreva um e-mail válido.', true);
+          if (!f.outros.some((c) => c.email === email)) f.outros.push(pessoaPorEmail(email));
+          f.novoEmail = '';
+          return desenhar();
+        }
         case 'trocar-contacto': f[alvo.dataset.qual] = null; if (alvo.dataset.qual === 'principal') { f.cliente = null; f.comCliente = false; } sugerirTipo(f); return desenhar();
         case 'escolher-contacto': {
           const c = f._resultados[alvo.dataset.qual][Number(alvo.dataset.indice)];
@@ -781,6 +818,15 @@
     if (el.type !== 'checkbox' && el.tagName !== 'SELECT') formulario[campo] = el.value;
   });
 
+  // Enter no campo «Outro e-mail» adiciona o convidado (não confirma o agendamento)
+  conteudo.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && ev.target.dataset && ev.target.dataset.campo === 'novoEmail') {
+      ev.preventDefault();
+      const botao = conteudo.querySelector('[data-acao="adicionar-email"]');
+      if (botao) botao.click();
+    }
+  });
+
   conteudo.addEventListener('change', (ev) => {
     const el = ev.target;
     if (el.dataset.convidar && formulario) { formulario.convidar[el.dataset.convidar] = el.checked; return; }
@@ -792,6 +838,10 @@
     if (campo === 'tipo') { formulario.tipo = el.value; formulario.tipoManual = true; return; }
     if (campo === 'empreendimento') { formulario.empreendimento = el.value; return desenhar(); }
     if (campo === 'tipologia') { formulario.tipologia = el.value; return; }
+    if (campo === 'adicionar-equipa') {
+      if (el.value && !formulario.outros.some((c) => c.email === el.value)) formulario.outros.push(pessoaPorEmail(el.value));
+      return desenhar();
+    }
     if (campo === 'inicio' && formulario.fim <= el.value) {
       const [h, m] = el.value.split(':').map(Number);
       formulario.inicio = el.value;
@@ -857,9 +907,14 @@
       const aviso = document.querySelector('[data-aviso]');
       if (estado.eu.modo === 'demo') { aviso.textContent = 'Modo de demonstração: dados fictícios, nada é gravado no HubSpot.'; aviso.hidden = false; }
       else if (!estado.eu.escritaAtiva) { aviso.textContent = 'Só leitura: a escrita no HubSpot ainda não está autorizada.'; aviso.hidden = false; }
-      const opcoes = await api('/api/empreendimentos');
+      const [opcoes, equipa] = await Promise.all([
+        api('/api/empreendimentos'),
+        api('/api/equipa').catch(() => ({ pessoas: [], predefinidos: [] })),
+      ]);
       estado.empreendimentos = opcoes.empreendimentos;
       estado.tipologias = opcoes.tipologias || [];
+      estado.equipa = equipa.pessoas || [];
+      estado.predefinidos = equipa.predefinidos || [];
       atualizarContadorPendentes();
       desenhar();
     } catch (e) {
