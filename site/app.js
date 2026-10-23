@@ -420,10 +420,11 @@
         outlook: Boolean(f.outlook && calendarioPronto()),
         convidar: Object.keys(f.convidar).filter((id) => f.convidar[id]),
       };
-      const { reuniao, outlook } = await api('/api/reunioes', { method: 'POST', body: corpo, headers: { 'Idempotency-Key': f.chave } });
+      const { reuniao, outlook, aviso } = await api('/api/reunioes', { method: 'POST', body: corpo, headers: { 'Idempotency-Key': f.chave } });
       f.feito = reuniao;
       f.resultadoOutlook = outlook;
-      mensagem(outlook && outlook.estado === 'falhou' ? 'Reunião registada no HubSpot; o evento Outlook falhou.' : 'Reunião registada no HubSpot.', outlook && outlook.estado === 'falhou');
+      if (aviso) mensagem(`Reunião registada no HubSpot. ${aviso}`, true);
+      else mensagem(outlook && outlook.estado === 'falhou' ? 'Reunião registada no HubSpot; o evento Outlook falhou.' : 'Reunião registada no HubSpot.', outlook && outlook.estado === 'falhou');
       atualizarContadorPendentes();
     } catch (e) {
       mensagem(e.message, true);   // a mesma chave é reutilizada numa nova tentativa: não duplica

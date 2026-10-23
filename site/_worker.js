@@ -88,6 +88,18 @@ class ErroHttp extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+// Recusa do HubSpot: mostra o código e o motivo que o HubSpot devolve (nunca inclui o token)
+class ErroHubSpot extends ErroHttp {
+  constructor(estadoHubSpot, texto) {
+    let motivo = '';
+    try { motivo = String(JSON.parse(texto).message || ''); } catch { motivo = ''; }
+    if (estadoHubSpot === 401) motivo = 'token da Private App inválido ou expirado';
+    else if (estadoHubSpot === 403) motivo = 'falta uma permissão ao token da Private App' + (motivo ? ` (${motivo})` : '');
+    super(502, `O HubSpot recusou o pedido (${estadoHubSpot})${motivo ? ': ' + motivo.slice(0, 300) : ''}.`);
+    this.estadoHubSpot = estadoHubSpot;
+  }
+}
+
 /* Aceita os nomes MICROSOFT_* (painel) e ENTRA_* (código); completa o que é opcional:
    APP_URL     por omissão, o endereço pelo qual a app foi aberta (tem de coincidir com o redirect registado);
    SESSION_SECRET  por omissão, derivado do client secret (renovar o secret termina as sessões). */
@@ -697,7 +709,7 @@ async function criarReuniao(request, env, fonte, utilizador) {
       });
     }
   }
-  return json({ reuniao: final, outlook }, 201);
+  return json({ reuniao: final, outlook, aviso: criada.aviso || '' }, 201);
 }
 
 async function tentarOutlookDeNovo(request, env, fonte, utilizador, reuniao) {
@@ -887,8 +899,9 @@ function fonteHubSpot(env) {
     });
     if (r.status === 404) return null;
     if (!r.ok) {
-      console.error('HubSpot', metodo, caminho, r.status, (await r.text()).slice(0, 500));
-      throw new ErroHttp(502, 'O HubSpot não respondeu como esperado. Tente novamente.');
+      const texto = await r.text();
+      console.error('HubSpot', metodo, caminho, r.status, texto.slice(0, 500));
+      throw new ErroHubSpot(r.status, texto);
     }
     return r.status === 204 ? {} : r.json();
   };
@@ -1031,14 +1044,26 @@ function fonteHubSpot(env) {
       if (r.empreendimento) propriedades.empreendimento = r.empreendimento;
       if (r.tipologia) propriedades.tipologia = r.tipologia;
       if (r.orcamento) propriedades.orcamento = String(r.orcamento);
-      const o = await pedir('POST', '/crm/v3/objects/meetings', {
+      const corpo = () => ({
         properties: propriedades,
         associations: r.contactos.map((id) => ({
           to: { id: String(id) },
           types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: ASSOC_REUNIAO_CONTACTO }],
         })),
       });
-      return this.lerReuniao(o.id);
+      let o, aviso = '';
+      try {
+        o = await pedir('POST', '/crm/v3/objects/meetings', corpo());
+      } catch (e) {
+        // Se o HubSpot recusar os campos próprios (400: nada foi criado), grava sem eles: já estão nas notas internas
+        const proprios = ['empreendimento', 'tipologia', 'orcamento'].filter((k) => k in propriedades);
+        if (!(e instanceof ErroHubSpot && e.estadoHubSpot === 400 && proprios.length)) throw e;
+        for (const k of proprios) delete propriedades[k];
+        o = await pedir('POST', '/crm/v3/objects/meetings', corpo());
+        aviso = `Os campos Empreendimento, Tipologia e Orçamento ficaram só nas notas internas. ${e.message}`;
+      }
+      const criada = await this.lerReuniao(o.id);
+      return aviso ? { ...criada, aviso } : criada;
     },
 
     async atualizarReuniao(id, alteracoes) {

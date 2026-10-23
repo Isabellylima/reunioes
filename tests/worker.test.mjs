@@ -234,6 +234,54 @@ test('Access: modo HubSpot com escrita desligada recusa criar, reprogramar e res
   assert.deepEqual(escritas, []);
 }));
 
+test('HubSpot recusa os campos próprios (400): grava a reunião sem eles e avisa; 403 mostra o motivo', async () => {
+  const original = globalThis.fetch;
+  const criacoes = [];
+  let estadoCriar = 400;
+  globalThis.fetch = async (url, op = {}) => {
+    const u = String(url);
+    if (u === `https://${EQUIPA}/cdn-cgi/access/certs`) return new Response(JSON.stringify({ keys: [jwkPublica] }));
+    if (u.includes('/crm/v3/owners/')) return new Response(JSON.stringify({ results: [{ id: '1000001', email: 'ana.teste@fercopor.pt', firstName: 'Ana', lastName: 'Teste', archived: false }] }));
+    if (u.endsWith('/crm/v3/properties/meetings/empreendimento')) return new Response(JSON.stringify({ options: [{ value: 'PÁTIO', label: 'PÁTIO' }] }));
+    if (u.endsWith('/crm/v3/properties/meetings/tipologia')) return new Response(JSON.stringify({ options: [{ value: 'T3', label: 'T3' }] }));
+    if (u.includes('/crm/v3/objects/contacts/batch/read')) return new Response(JSON.stringify({ results: [{ id: '2001', properties: { firstname: 'Rui', lastname: 'Cliente', email: 'rui@exemplo.pt', tipo_de_contacto: 'Lead' } }] }));
+    if (op.method === 'POST' && u === 'https://api.hubapi.com/crm/v3/objects/meetings') {
+      const props = JSON.parse(op.body).properties;
+      criacoes.push(props);
+      if (criacoes.length === 1 && estadoCriar === 400) return new Response(JSON.stringify({ category: 'VALIDATION_ERROR', message: 'Property values were not valid: orcamento' }), { status: 400 });
+      if (estadoCriar === 403) return new Response(JSON.stringify({ category: 'MISSING_SCOPES', message: 'This app hasn\'t been granted all required scopes' }), { status: 403 });
+      return new Response(JSON.stringify({ id: '777' }), { status: 201 });
+    }
+    if (u.startsWith('https://api.hubapi.com/crm/v3/objects/meetings/777?')) {
+      return new Response(JSON.stringify({ id: '777', properties: { hubspot_owner_id: '1000001', hs_meeting_title: 'Teste', hs_meeting_start_time: '2026-10-27T10:00:00Z', hs_meeting_end_time: '2026-10-27T11:00:00Z', hs_meeting_outcome: 'SCHEDULED' } }));
+    }
+    return new Response(JSON.stringify({ results: [] }));
+  };
+  try {
+    const env = { ...envAccess(), HUBSPOT_WRITE_ENABLED: 'true' };
+    const h = { 'Cf-Access-Jwt-Assertion': await jwt({ email: 'ana.teste@fercopor.pt' }) };
+    const corpo = { empreendimento: 'PÁTIO', tipo: 'Reunião Comercial', modalidade: 'presencial', inicio: '2026-10-27T10:00:00Z', fim: '2026-10-27T11:00:00Z', contactoId: '2001', tipologia: 'T3', orcamento: '450 000 €' };
+    const r = await pedir(env, '/api/reunioes', { method: 'POST', body: corpo, headers: { ...h, 'Idempotency-Key': 'teste-idem-0400-abcdef' } });
+    assert.equal(r.status, 201);
+    const dados = await r.json();
+    assert.match(dados.aviso, /notas internas/);
+    assert.match(dados.aviso, /\(400\): Property values were not valid/);
+    assert.equal(criacoes.length, 2);
+    assert.equal(criacoes[0].orcamento, '450000');
+    assert.ok(!('empreendimento' in criacoes[1]) && !('tipologia' in criacoes[1]) && !('orcamento' in criacoes[1]));
+    assert.match(criacoes[1].hs_internal_meeting_notes, /Orçamento: 450\s000\s€/);
+
+    estadoCriar = 403;
+    const r2 = await pedir(env, '/api/reunioes', { method: 'POST', body: corpo, headers: { ...h, 'Idempotency-Key': 'teste-idem-0403-abcdef' } });
+    assert.equal(r2.status, 502);
+    const e2 = await r2.json();
+    assert.match(e2.erro, /\(403\): falta uma permissão/);
+    assert.ok(!e2.erro.includes('token-teste'));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('pedido de outra origem é recusado', async () => {
   const r = await pedir(envDemo(), '/api/reunioes', { method: 'POST', body: {}, headers: { Origin: 'https://malicioso.exemplo' } });
   assert.equal(r.status, 403);
