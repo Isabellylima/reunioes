@@ -579,3 +579,10 @@ test('HubSpot: a reunião criada leva empreendimento, tipologia e orçamento nas
     assert.match(criada.properties.hs_internal_meeting_notes, /Empreendimento: PÁTIO\nTipologia: T3\nOrçamento: 420\s000\s€/);
   } finally { globalThis.fetch = original; }
 });
+
+test('ícone FERCOPOR: entregue sem sessão e ligado nas duas páginas; o resto continua protegido', async () => {
+  const env = envEntra();
+  for (const f of ['/favicon.ico', '/assets/favicon.svg', '/assets/apple-touch-icon.png']) assert.equal((await pedir(env, f)).status, 200, f);
+  assert.match(await (await pedir(env, '/')).text(), /rel="icon" href="\/assets\/favicon\.svg"/);
+  assert.match(await (await pedir(env, '/app.js')).text(), /Iniciar sessão/);
+});

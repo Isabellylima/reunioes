@@ -136,7 +136,7 @@ async function tratar(request, env) {
     if (caminho === '/auth/retorno' && entraConfigurada(env)) return concluirLoginMicrosoft(request, env);
     if (caminho === '/auth/sair') return terminarSessao(env);
     if (caminho === '/auth/diagnostico') return diagnosticoLogin(request, env);
-    if (caminho === '/style.css' || caminho === '/assets/fercopor-logo.svg') return env.ASSETS.fetch(request);
+    if (FICHEIROS_PUBLICOS.includes(caminho)) return env.ASSETS.fetch(request);
   }
 
   let utilizador;
@@ -257,6 +257,8 @@ const DICAS_AADSTS = {
   AADSTS50194: 'A aplicação não está configurada para este diretório: confirme MICROSOFT_TENANT_ID.',
 };
 
+// Ficheiros entregues sem sessão: só os da página de entrada (estilo, logótipo e ícones; sem dados)
+const FICHEIROS_PUBLICOS = ['/style.css', '/assets/fercopor-logo.svg', '/favicon.ico', '/assets/favicon.svg', '/assets/apple-touch-icon.png'];
 const COOKIE_SESSAO = '__Host-reunioes_sessao';
 const COOKIE_OAUTH = '__Host-reunioes_oauth';
 const AMBITOS_LOGIN = 'openid profile email';
@@ -491,7 +493,8 @@ function paginaEntrada(env, mensagem, status = 200, cabecalhosExtra) {
   const html = `<!doctype html>
 <html lang="pt-PT"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#202020">
-<title>FERCOPOR · Reuniões</title><link rel="stylesheet" href="/style.css"></head>
+<title>FERCOPOR · Reuniões</title>
+<link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" href="/assets/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/assets/apple-touch-icon.png"><link rel="stylesheet" href="/style.css"></head>
 <body class="pagina-entrada">
 <main class="entrada-ecra">
   <section class="entrada-marca" aria-label="FERCOPOR Reuniões">
