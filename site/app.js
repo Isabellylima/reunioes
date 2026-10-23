@@ -14,7 +14,7 @@
   const H_INICIO = 8, H_FIM = 21, PX_HORA = 56;
 
   const conteudo = document.getElementById('conteudo');
-  const estado = { eu: null, empreendimentos: [], semana: 0, vistaDia: null, separador: 'hoje', pendentes: null };
+  const estado = { eu: null, empreendimentos: [], tipologias: [], semana: 0, vistaDia: null, separador: 'hoje', pendentes: null };
 
   /* ---------- Utilitários ---------- */
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -331,15 +331,20 @@
 
         <button type="button" class="botao" data-acao="mais" aria-expanded="${f.mais}">${f.mais ? '−' : '+'} Mais detalhes (tipologia, orçamento, notas)</button>
         ${f.mais ? `<div class="grelha-2">
-            <label class="campo">Tipologia<input type="text" data-campo="tipologia" value="${esc(f.tipologia)}" maxlength="40" placeholder="Ex.: T3"></label>
-            <label class="campo">Orçamento<input type="text" data-campo="orcamento" value="${esc(f.orcamento)}" maxlength="60" placeholder="Ex.: 450 000 €"></label>
+            <label class="campo">Tipologia
+              <select data-campo="tipologia">
+                <option value="">Sem tipologia</option>
+                ${estado.tipologias.map((o) => `<option value="${esc(o.valor)}" ${o.valor === f.tipologia ? 'selected' : ''}>${esc(o.nome)}</option>`).join('')}
+              </select>
+            </label>
+            <label class="campo">Orçamento (€)<input type="text" inputmode="numeric" data-campo="orcamento" value="${esc(f.orcamento)}" maxlength="20" placeholder="Ex.: 450000"></label>
           </div>
           <label class="campo">Observações internas<textarea rows="3" data-campo="observacoes" maxlength="2000">${esc(f.observacoes)}</textarea></label>` : ''}
 
         <section class="pre-visualizacao" aria-label="Título no HubSpot">
           <span class="rotulo">Título no HubSpot</span>
           <label class="campo"><span class="so-leitor">Título</span><input type="text" data-campo="titulo" value="${esc(f.titulo)}" maxlength="200"></label>
-          <span class="subtitulo">Empreendimento, tipologia e orçamento ficam também nas notas internas.</span>
+          <span class="subtitulo">Empreendimento, tipologia e orçamento ficam nos campos do HubSpot e também nas notas internas.</span>
         </section>
 
         <div class="rodape-fixo"><button type="submit" class="botao botao-principal botao-grande" ${desativado || f.aEnviar ? 'disabled' : ''}>${f.aEnviar ? 'A registar…' : 'Confirmar agendamento'}</button></div>
@@ -661,6 +666,7 @@
     if (campo === 'comCliente') { formulario.comCliente = el.checked; if (!el.checked) formulario.cliente = null; sugerirTipo(formulario); return desenhar(); }
     if (campo === 'tipo') { formulario.tipo = el.value; formulario.tipoManual = true; return; }
     if (campo === 'empreendimento') { formulario.empreendimento = el.value; return desenhar(); }
+    if (campo === 'tipologia') { formulario.tipologia = el.value; return; }
     if (campo === 'inicio' && formulario.fim <= el.value) {
       const [h, m] = el.value.split(':').map(Number);
       formulario.inicio = el.value;
@@ -721,7 +727,9 @@
       const aviso = document.querySelector('[data-aviso]');
       if (estado.eu.modo === 'demo') { aviso.textContent = 'Modo de demonstração: dados fictícios, nada é gravado no HubSpot.'; aviso.hidden = false; }
       else if (!estado.eu.escritaAtiva) { aviso.textContent = 'Só leitura: a escrita no HubSpot ainda não está autorizada.'; aviso.hidden = false; }
-      estado.empreendimentos = (await api('/api/empreendimentos')).empreendimentos;
+      const opcoes = await api('/api/empreendimentos');
+      estado.empreendimentos = opcoes.empreendimentos;
+      estado.tipologias = opcoes.tipologias || [];
       atualizarContadorPendentes();
       desenhar();
     } catch (e) {

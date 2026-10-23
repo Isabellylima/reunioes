@@ -137,6 +137,15 @@ Não são precisas `OnlineMeetings.ReadWrite`, `Mail.Send` nem permissões de **
 
 Sem `CALENDAR_MODE`, o calendário está desligado e a app funciona como antes.
 
+## Campos da reunião no HubSpot: Empreendimento, Tipologia e Orçamento
+
+Ao agendar na app, a reunião criada no HubSpot fica com:
+- **Empreendimento** (`empreendimento`, lista): o empreendimento escolhido. As opções da app vêm desta propriedade das reuniões; se não for possível lê-la, vêm de «Empreendimento (Negócio)».
+- **Tipologia** (`tipologia`, lista): opcional, com as mesmas opções da propriedade no HubSpot. Uma opção nova no HubSpot aparece na app automaticamente.
+- **Orçamento** (`orcamento`, número): opcional, em euros. A app aceita «450000», «450 000 €» ou «450.000».
+
+Os três ficam também nas notas internas, como antes (`Empreendimento: …`, `Tipologia: …`, `Orçamento: 450 000 €`).
+
 ## Mais tarde, só com autorização: ligar ao HubSpot
 
 1. **Leitura:** Private App «FERCOPOR Reuniões» com âmbitos de leitura de contactos, de proprietários, do esquema de negócios (opções de «Empreendimento») e de reuniões.

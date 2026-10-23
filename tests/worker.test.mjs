@@ -471,3 +471,63 @@ test('Entra: configuração incompleta → 503 (nunca abre sem login)', async ()
   const r = await pedir({ ENTRA_TENANT_ID: TENANT, ASSETS: { fetch: async () => new Response('x') } }, '/');
   assert.equal(r.status, 503);
 });
+
+/* ---------- Empreendimento, tipologia e orçamento nos campos das reuniões ---------- */
+
+test('orçamento: aceita formatos portugueses e recusa texto', () => {
+  const base = { empreendimento: 'PURE', tipo: 'Reunião Comercial', modalidade: 'presencial', inicio: '2026-10-27T10:00:00Z', fim: '2026-10-27T11:00:00Z', contactoId: '1001' };
+  const tip = [{ valor: 'T3', nome: 'T3' }];
+  for (const [entrada, esperado] of [['450000', 450000], ['450 000 €', 450000], ['450.000', 450000], ['450000,50', 450001], ['', null]]) {
+    assert.equal(validarNovaReuniao({ ...base, orcamento: entrada }, ['PURE'], tip).orcamento, esperado, entrada);
+  }
+  assert.throws(() => validarNovaReuniao({ ...base, orcamento: '450 mil' }, ['PURE'], tip));
+  assert.throws(() => validarNovaReuniao({ ...base, orcamento: '0' }, ['PURE'], tip));
+  assert.equal(validarNovaReuniao({ ...base, tipologia: 'T3' }, ['PURE'], tip).tipologia, 'T3');
+  assert.throws(() => validarNovaReuniao({ ...base, tipologia: 'T9' }, ['PURE'], tip));
+});
+
+test('demo: empreendimento, tipologia e orçamento ficam nos campos e nas notas', async () => {
+  const env = envDemo();
+  const opcoes = await (await pedir(env, '/api/empreendimentos')).json();
+  assert.ok(opcoes.tipologias.some((t) => t.valor === 'Penthouse c/ piscina privativa' && t.nome === 'T4 Penthouse c/ piscina privativa'));
+  const corpo = { contactoId: '1001', empreendimento: 'PÁTIO', tipo: 'Reunião Comercial', modalidade: 'presencial', inicio: '2026-11-04T10:00:00Z', fim: '2026-11-04T11:00:00Z', tipologia: 'Penthouse c/ piscina privativa', orcamento: '650 000' };
+  const r = await pedir(env, '/api/reunioes', { method: 'POST', body: corpo, headers: { 'Idempotency-Key': 'teste-idem-campos-0001' } });
+  assert.equal(r.status, 201);
+  const { reuniao } = await r.json();
+  assert.equal(reuniao.empreendimento, 'PÁTIO');
+  assert.equal(reuniao.tipologia, 'Penthouse c/ piscina privativa');
+  assert.equal(reuniao.orcamento, 650000);
+  assert.match(reuniao.notas, /Empreendimento: PÁTIO/);
+  assert.match(reuniao.notas, /Tipologia: T4 Penthouse c\/ piscina privativa/);
+  assert.match(reuniao.notas, /Orçamento: 650\s000\s€/);
+  const errada = await pedir(env, '/api/reunioes', { method: 'POST', body: { ...corpo, tipologia: 'T9' }, headers: { 'Idempotency-Key': 'teste-idem-campos-0002' } });
+  assert.equal(errada.status, 400);
+});
+
+test('HubSpot: a reunião criada leva empreendimento, tipologia e orçamento nas propriedades', async () => {
+  const original = globalThis.fetch;
+  let criada = null;
+  globalThis.fetch = async (url, op = {}) => {
+    const u = String(url);
+    const metodo = op.method || 'GET';
+    if (u === `https://${EQUIPA}/cdn-cgi/access/certs`) return new Response(JSON.stringify({ keys: [jwkPublica] }));
+    if (u.includes('/crm/v3/owners/')) return new Response(JSON.stringify({ results: [{ id: '1000001', email: 'ana.teste@fercopor.pt', firstName: 'Ana', lastName: 'Teste', archived: false }] }));
+    if (u.endsWith('/crm/v3/properties/meetings/empreendimento')) return new Response(JSON.stringify({ options: [{ value: 'PÁTIO', label: 'PÁTIO' }] }));
+    if (u.endsWith('/crm/v3/properties/meetings/tipologia')) return new Response(JSON.stringify({ options: [{ value: 'T3', label: 'T3' }] }));
+    if (u.endsWith('/crm/v3/objects/contacts/batch/read')) return new Response(JSON.stringify({ results: [{ id: '2001', properties: { firstname: 'Maria', lastname: 'Cliente', tipo_de_contacto: 'Comprador' } }] }));
+    if (metodo === 'POST' && u.endsWith('/crm/v3/objects/meetings')) { criada = JSON.parse(op.body); return new Response(JSON.stringify({ id: '777' }), { status: 201 }); }
+    if (u.includes('/crm/v3/objects/meetings/777?')) return new Response(JSON.stringify({ id: '777', properties: { ...criada.properties } }));
+    return new Response(JSON.stringify({ results: [] }));
+  };
+  try {
+    const env = { ...envAccess(), HUBSPOT_WRITE_ENABLED: 'true' };
+    const h = { 'Cf-Access-Jwt-Assertion': await jwt({ email: 'ana.teste@fercopor.pt' }), 'Idempotency-Key': 'teste-idem-hubspot-0001' };
+    const corpo = { contactoId: '2001', empreendimento: 'PÁTIO', tipo: 'Reunião Comercial', modalidade: 'presencial', inicio: '2026-11-04T10:00:00Z', fim: '2026-11-04T11:00:00Z', tipologia: 'T3', orcamento: '420.000' };
+    const r = await pedir(env, '/api/reunioes', { method: 'POST', body: corpo, headers: h });
+    assert.equal(r.status, 201);
+    assert.equal(criada.properties.empreendimento, 'PÁTIO');
+    assert.equal(criada.properties.tipologia, 'T3');
+    assert.equal(criada.properties.orcamento, '420000');
+    assert.match(criada.properties.hs_internal_meeting_notes, /Empreendimento: PÁTIO\nTipologia: T3\nOrçamento: 420\s000\s€/);
+  } finally { globalThis.fetch = original; }
+});

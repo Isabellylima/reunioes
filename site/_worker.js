@@ -68,6 +68,7 @@ const PROPRIEDADES_REUNIAO = [
   'hs_meeting_title', 'hs_meeting_start_time', 'hs_meeting_end_time', 'hs_meeting_outcome', 'hs_activity_type',
   'hubspot_owner_id', 'hs_internal_meeting_notes', 'hs_meeting_location', 'hs_meeting_location_type',
   'hs_video_conference_url', 'hs_meeting_source',
+  'empreendimento', 'tipologia', 'orcamento',   // propriedades próprias da FERCOPOR nas reuniões
 ];
 
 export default {
@@ -174,7 +175,8 @@ async function tratar(request, env) {
     return desligarCalendario(env, utilizador);
   }
   if (m === 'GET' && caminho === '/api/empreendimentos') {
-    return json({ empreendimentos: await fonte.empreendimentos() });
+    const [empreendimentos, tipologias] = await Promise.all([fonte.empreendimentos(), fonte.tipologias()]);
+    return json({ empreendimentos, tipologias });
   }
   if (m === 'GET' && caminho === '/api/contactos') {
     const q = (url.searchParams.get('q') || '').trim();
@@ -646,8 +648,8 @@ async function criarReuniao(request, env, fonte, utilizador) {
   if (jaFeita) return json({ reuniao: await fonte.lerReuniao(jaFeita), repetida: true, outlook: await resumoOutlook(env, jaFeita) });
 
   const corpo = await lerJson(request);
-  const empreendimentos = await fonte.empreendimentos();
-  const pedido = validarNovaReuniao(corpo, empreendimentos);
+  const [empreendimentos, tipologias] = await Promise.all([fonte.empreendimentos(), fonte.tipologias()]);
+  const pedido = validarNovaReuniao(corpo, empreendimentos, tipologias);
 
   const ids = [pedido.contactoId, pedido.clienteId].filter(Boolean);
   const contactos = await fonte.lerContactos(ids);
@@ -661,7 +663,8 @@ async function criarReuniao(request, env, fonte, utilizador) {
   if (cliente && principal.papel !== 'parceiro') throw new ErroHttp(400, 'Só um parceiro pode apresentar um cliente.');
 
   const titulo = pedido.titulo || gerarTitulo(pedido.empreendimento, principal, cliente);
-  const notas = gerarNotas(pedido, utilizador);
+  const tipologia = tipologias.find((t) => t.valor === pedido.tipologia);
+  const notas = gerarNotas({ ...pedido, tipologiaNome: tipologia ? tipologia.nome : '' }, utilizador);
 
   const criada = await fonte.criarReuniao({
     ownerId: utilizador.ownerId,
@@ -673,6 +676,9 @@ async function criarReuniao(request, env, fonte, utilizador) {
     local: pedido.local,
     ligacao: pedido.ligacao,
     notas,
+    empreendimento: pedido.empreendimento,
+    tipologia: pedido.tipologia,
+    orcamento: pedido.orcamento,
     contactos: ids,
   });
   await guardarIdempotencia(env, utilizador, chave, criada.id);
@@ -759,7 +765,7 @@ function exigirEscrita(fonte) {
 
 /* ---------- Regras de negócio (puras) ---------- */
 
-function validarNovaReuniao(c, empreendimentos) {
+function validarNovaReuniao(c, empreendimentos, tipologias = []) {
   const empreendimento = String(c.empreendimento || '');
   if (!empreendimentos.includes(empreendimento)) throw new ErroHttp(400, 'Empreendimento inválido.');
   const tipo = String(c.tipo || '');
@@ -784,11 +790,37 @@ function validarNovaReuniao(c, empreendimentos) {
     convidar,
     local: limparTexto(c.local, 300),
     ligacao,
-    tipologia: limparTexto(c.tipologia, 40),
-    orcamento: limparTexto(c.orcamento, 60),
+    tipologia: validarTipologia(c.tipologia, tipologias),
+    orcamento: lerOrcamento(c.orcamento),
     observacoes: limparTexto(c.observacoes, 2000),
     titulo: limparTexto(c.titulo, 200),
   };
+}
+
+// Tipologia: vazia ou uma das opções da propriedade «Tipologia» das reuniões no HubSpot
+function validarTipologia(v, tipologias) {
+  const valor = limparTexto(v, 80);
+  if (!valor) return '';
+  if (!tipologias.some((t) => t.valor === valor)) throw new ErroHttp(400, 'Tipologia inválida.');
+  return valor;
+}
+
+// Orçamento em euros (número inteiro). Aceita «450000», «450 000 €», «450.000» e «450000,50».
+function lerOrcamento(v) {
+  const t = String(v == null ? '' : v).replace(/[€\s\u00A0]/g, '');
+  if (!t) return null;
+  let n;
+  if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) n = t.replace(/\./g, '').replace(',', '.');
+  else if (/^\d+(,\d+)?$/.test(t)) n = t.replace(',', '.');
+  else if (/^\d+(\.\d+)?$/.test(t)) n = t;
+  else throw new ErroHttp(400, 'Indique o orçamento em euros, só com números (ex.: 450000).');
+  const x = Math.round(Number(n));
+  if (!(x > 0 && x < 1e9)) throw new ErroHttp(400, 'Orçamento inválido.');
+  return x;
+}
+
+function formatarEuros(x) {
+  return new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(x);
 }
 
 function validarHorario(inicio, fim) {
@@ -808,8 +840,8 @@ function gerarTitulo(empreendimento, principal, cliente) {
 
 function gerarNotas(p, utilizador) {
   const linhas = [`Empreendimento: ${p.empreendimento}`];
-  if (p.tipologia) linhas.push(`Tipologia: ${p.tipologia}`);
-  if (p.orcamento) linhas.push(`Orçamento: ${p.orcamento}`);
+  if (p.tipologia) linhas.push(`Tipologia: ${p.tipologiaNome || p.tipologia}`);
+  if (p.orcamento) linhas.push(`Orçamento: ${formatarEuros(p.orcamento)}`);
   if (p.observacoes) linhas.push(`Observações: ${p.observacoes}`);
   if (p.ligacao) linhas.push(`Ligação: ${p.ligacao}`);
   linhas.push(`Agendada na app por ${utilizador.nome}`);
@@ -876,6 +908,9 @@ function fonteHubSpot(env) {
       modalidade: Object.keys(MODALIDADES).find((k) => MODALIDADES[k] === p.hs_meeting_location_type) || '',
       ligacao: p.hs_video_conference_url || '',
       origem: p.hs_meeting_source || '',
+      empreendimento: p.empreendimento || '',
+      tipologia: p.tipologia || '',
+      orcamento: p.orcamento ? Number(p.orcamento) : null,
       contactos: contactos || [],
     };
   };
@@ -930,9 +965,19 @@ function fonteHubSpot(env) {
       return { id: String(o.id), nome: [o.firstName, o.lastName].filter(Boolean).join(' ') || email };
     },
 
+    // Opções da propriedade «Empreendimento» das reuniões (a que é preenchida); se não existir, as dos negócios
     async empreendimentos() {
-      const r = await pedir('GET', '/crm/v3/properties/deals/empreendimento');
+      let r = null;
+      try { r = await pedir('GET', '/crm/v3/properties/meetings/empreendimento'); } catch { r = null; }   // sem permissão: usa os negócios
+      if (!r) r = await pedir('GET', '/crm/v3/properties/deals/empreendimento');
       return ((r && r.options) || []).filter((o) => !o.hidden).map((o) => o.value);
+    },
+
+    // Opções da propriedade «Tipologia» das reuniões (sem acesso: lista vazia e o campo fica por preencher)
+    async tipologias() {
+      let r = null;
+      try { r = await pedir('GET', '/crm/v3/properties/meetings/tipologia'); } catch { r = null; }
+      return ((r && r.options) || []).filter((o) => !o.hidden).map((o) => ({ valor: o.value, nome: o.label || o.value }));
     },
 
     async procurarContactos(q) {
@@ -983,6 +1028,9 @@ function fonteHubSpot(env) {
       };
       if (r.local) propriedades.hs_meeting_location = r.local;
       if (r.ligacao) propriedades.hs_video_conference_url = r.ligacao;
+      if (r.empreendimento) propriedades.empreendimento = r.empreendimento;
+      if (r.tipologia) propriedades.tipologia = r.tipologia;
+      if (r.orcamento) propriedades.orcamento = String(r.orcamento);
       const o = await pedir('POST', '/crm/v3/objects/meetings', {
         properties: propriedades,
         associations: r.contactos.map((id) => ({
@@ -1026,6 +1074,7 @@ function fonteDemo() {
       return { id, nome: nomeDoEmail(email) };
     },
     async empreendimentos() { return d.empreendimentos; },
+    async tipologias() { return d.tipologias; },
     async procurarContactos(q) {
       const n = normalizar(q);
       return d.contactos.filter((c) => !c.excluido && normalizar(c.nome + ' ' + c.email).includes(n)).slice(0, 20);
@@ -1048,6 +1097,7 @@ function fonteDemo() {
         id: String(d.proximoId++), titulo: r.titulo, inicio: r.inicio, fim: r.fim, resultado: 'SCHEDULED', tipo: r.tipo,
         ownerId: String(r.ownerId), notas: r.notas, local: r.local, modalidade: r.modalidade, ligacao: r.ligacao,
         origem: 'APP_DEMO', contactos: r.contactos.map(String),
+        empreendimento: r.empreendimento || '', tipologia: r.tipologia || '', orcamento: r.orcamento || null,
       };
       d.reunioes.push(nova);
       return comContactos(nova);
@@ -1073,7 +1123,14 @@ function semearDemo() {
     ['1013', 'Beatriz Lopes', 'Lead'], ['1014', 'Clara Sá', 'Lead'], ['1015', 'Equipa Interna (exemplo)', 'Staff FERCOPOR'],
   ].map(([id, nome, tipo]) => ({ id, nome, email: normalizar(nome).replace(/[^a-z]+/g, '.') + '@exemplo.pt', tipoDeContacto: tipo, ...papelDoContacto(tipo) }));
   const empreendimentos = ['CASA VERDE', 'ENLIGHT', 'FOLIAGE', 'LISBOA', 'LUMARE', 'PRISMA', 'PURE', 'PÁTIO', 'RAIZ', 'SERENITY', 'SOUL', 'VC FORTE', 'VC JARDIM', 'VC PARQUE', 'VC55', 'VILARINHA'];
-  return { contactos, empreendimentos, reunioes: [], semeados: new Set(), proximoId: 900001 };
+  // Iguais às opções da propriedade «Tipologia» das reuniões no HubSpot (valor → nome)
+  const tipologias = [
+    ['T0'], ['T1'], ['T2'], ['T3'], ['T4'], ['T5'], ['+1'], ['Duplex'], ['Triplex'],
+    ['Penthouse c/ piscina privativa', 'T4 Penthouse c/ piscina privativa'], ['T4 Penthouse'], ['Garden T3 Duplex'], ['Garden T4 Duplex'],
+    ['Penthouse'], ['Penthouse c/ terraço/jardim'], ['T3 Penthouse'], ['Moradia'], ['T3 com jardim privativo'], ['T4 com varanda'],
+    ['T4 com jardim privativo'], ['Jardim privativo'], ['Loja'],
+  ].map(([valor, nome]) => ({ valor, nome: nome || valor }));
+  return { contactos, empreendimentos, tipologias, reunioes: [], semeados: new Set(), proximoId: 900001 };
 }
 
 function reunioesDemo(ownerId, agora, d) {
