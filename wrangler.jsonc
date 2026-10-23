@@ -16,10 +16,9 @@
   "observability": { "enabled": true },
   // Armazenamento: lista de utilizadores, anti-duplicação e auditoria (namespace "fercopor-reunioes").
   "kv_namespaces": [{ "binding": "REUNIOES_KV", "id": "3f79433b0c0641109f4fb95da8e40735" }],
-  // Login com Cloudflare Access (valores públicos, não são segredos).
-  // ADMIN_EMAILS fica definido no painel do Cloudflare (mantido por keep_vars).
+  // Login: só «Iniciar sessão com Microsoft» (Entra ID). O Cloudflare Access deixa de ser aceite.
+  // MICROSOFT_TENANT_ID, MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET e ADMIN_EMAILS ficam no painel (keep_vars).
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "isabelly-silva.cloudflareaccess.com",
-    "ACCESS_AUD": "9317f909c9c76891272c2c2853a63cd306bb7249f4b883cc804b0971464d0450"
+    "AUTH_MODE": "entra"
   }
 }

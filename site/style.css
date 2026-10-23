@@ -243,12 +243,43 @@ legend { font-size: 14px; font-weight: 700; padding: 0; margin-bottom: 8px; }
 /* ---------- Sessão ---------- */
 .sair { color: var(--creme); font-size: 14px; font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; padding: 0 6px; }
 .sair:hover { color: #FFFFFF; }
-.pagina-entrada { padding-bottom: 0; }
-.entrada { max-width: 440px; margin: 48px auto; padding: 32px 24px; background: var(--superficie); border: 1px solid var(--linha); border-radius: var(--raio); display: flex; flex-direction: column; gap: 16px; text-align: center; }
-.entrada h1 { font-size: 24px; font-weight: 800; }
-.entrada p { margin: 0; }
-.botao-microsoft { min-height: 52px; gap: 12px; background: var(--superficie); border: 1px solid #8C8C8C; color: #5E5E5E; font-weight: 600; }
-.botao-microsoft:hover { background: #F3F3F3; color: #5E5E5E; }
+/* ---------- Página de entrada ---------- */
+.pagina-entrada { padding-bottom: 0; background: var(--fundo); }
+.entrada-ecra { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+.entrada-marca {
+  background: var(--tinta); color: var(--creme);
+  padding: 20px 20px 28px; display: flex; flex-direction: column; gap: 22px;
+}
+.entrada-marca .marca img { width: 128px; height: 20px; }
+.entrada-chamada h1 { font-size: 24px; line-height: 1.2; font-weight: 800; letter-spacing: -.01em; max-width: 22ch; }
+.entrada-pontos { display: none; list-style: none; margin: 28px 0 0; padding: 0; flex-direction: column; gap: 14px; }
+.entrada-pontos li { display: flex; align-items: center; gap: 12px; color: #D9D3C3; font-size: 15px; font-weight: 600; }
+.entrada-pontos svg { flex: none; width: 22px; height: 22px; fill: none; stroke: #B49A55; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.entrada-rodape { display: none; margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #9C9483; }
+.entrada-painel { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px 40px; }
+.entrada-cartao {
+  width: 100%; max-width: 420px; background: var(--superficie); border: 1px solid var(--linha); border-top: 3px solid var(--bronze);
+  border-radius: var(--raio); padding: 28px 24px; display: flex; flex-direction: column; gap: 16px;
+}
+.entrada-cartao h2 { font-size: 22px; font-weight: 800; }
+.entrada-texto { margin: 0; color: var(--texto-2); }
+.entrada-aviso { margin: 0; padding: 10px 12px; border-radius: var(--raio-pequeno); font-size: 14px; font-weight: 600; background: var(--bronze-claro); color: var(--bronze-escuro); border: 1px solid var(--linha-forte); }
+.entrada-aviso.erro { background: #FBECEC; color: #8A1F1F; border-color: #EDC4C4; }
+.botao-microsoft { width: 100%; min-height: 52px; gap: 12px; background: var(--superficie); border: 1px solid #8C8C8C; color: #3B3B3B; font-weight: 600; }
+.botao-microsoft:hover { background: #F3F3F3; color: #3B3B3B; }
+.entrada-ajuda { border-top: 1px solid var(--linha); padding-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.entrada-ajuda p { margin: 0; font-size: 13px; color: var(--texto-3); }
+
+@media (min-width: 900px) {
+  .entrada-ecra { flex-direction: row; }
+  .entrada-marca { flex: 0 0 44%; max-width: 620px; padding: 40px 48px; justify-content: space-between; }
+  .entrada-marca .marca img { width: 153px; height: 24px; }
+  .entrada-chamada h1 { font-size: 34px; }
+  .entrada-pontos { display: flex; }
+  .entrada-rodape { display: block; }
+  .entrada-painel { align-items: center; padding: 40px; }
+  .entrada-cartao { padding: 36px 32px; }
+}
 
 /* ---------- Mensagens ---------- */
 .mensagem {

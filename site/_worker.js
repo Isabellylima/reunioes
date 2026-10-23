@@ -5,7 +5,8 @@
    1. Login «Iniciar sessão com Microsoft» (Entra ID, OpenID Connect + PKCE):
       valida o id_token (assinatura, emissor, audiência, organização, nonce,
       validade) e cria uma sessão num cookie assinado (HttpOnly, Secure).
-      Durante a transição aceita também o Cloudflare Access (AUTH_MODE ≠ "entra").
+      Com AUTH_MODE = "entra" (definido no wrangler.jsonc) só aceita a sessão Microsoft;
+      o Cloudflare Access fica apenas como recurso de emergência.
    2. Só deixa entrar utilizadores autorizados (lista em KV + ADMIN_EMAILS),
       cada um ligado a um proprietário ATIVO do HubSpot.
    3. Cada utilizador só lê e altera as SUAS reuniões (verificado aqui, em cada
@@ -466,20 +467,44 @@ function paginaEntrada(env, mensagem, status = 200, cabecalhosExtra) {
   cabecalhos.set('Content-Type', 'text/html; charset=utf-8');
   cabecalhos.set('Cache-Control', 'no-store');
   const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const dominio = esc((env.ALLOWED_DOMAIN || 'fercopor.pt').toLowerCase());
+  const tipoAviso = status >= 400 ? 'entrada-aviso erro' : 'entrada-aviso';
   const html = `<!doctype html>
-<html lang="pt-PT"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><title>Entrar · Reuniões FERCOPOR</title><link rel="stylesheet" href="/style.css"></head>
+<html lang="pt-PT"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#202020">
+<title>Entrar · Reuniões FERCOPOR</title><link rel="stylesheet" href="/style.css"></head>
 <body class="pagina-entrada">
-<header class="topo"><span class="marca"><img src="/assets/fercopor-logo.svg" alt="FERCOPOR" width="128" height="20"><span>Reuniões</span></span></header>
-<main class="entrada">
-  <h1>Reuniões FERCOPOR</h1>
-  <p>Entre com a sua conta Microsoft 365 da FERCOPOR.</p>
-  ${mensagem ? `<p class="nota" role="status">${esc(mensagem)}</p>` : ''}
-  <a class="botao botao-microsoft" href="/auth/entrar">
-    <svg viewBox="0 0 21 21" width="20" height="20" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#F25022"/><rect x="11" y="1" width="9" height="9" fill="#7FBA00"/><rect x="1" y="11" width="9" height="9" fill="#00A4EF"/><rect x="11" y="11" width="9" height="9" fill="#FFB900"/></svg>
-    Iniciar sessão com Microsoft
-  </a>
-  <p class="subtitulo">Só utilizadores autorizados. Não é pedida nenhuma palavra-passe a esta aplicação.</p>
+<main class="entrada-ecra">
+  <section class="entrada-marca" aria-label="FERCOPOR Reuniões">
+    <div class="marca">
+      <img src="/assets/fercopor-logo.svg" alt="FERCOPOR" width="153" height="24">
+      <span>Reuniões</span>
+    </div>
+    <div class="entrada-chamada">
+      <h1>As suas reuniões comerciais, num só lugar.</h1>
+      <ul class="entrada-pontos">
+        <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Agende e consulte a semana</li>
+        <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Classifique o resultado de cada reunião</li>
+        <li><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>Tudo registado no HubSpot</li>
+      </ul>
+    </div>
+    <p class="entrada-rodape">FERCOPOR · Uso interno</p>
+  </section>
+  <section class="entrada-painel">
+    <div class="entrada-cartao">
+      <h2>Iniciar sessão</h2>
+      <p class="entrada-texto">Use a sua conta Microsoft 365 da FERCOPOR (<strong>@${dominio}</strong>).</p>
+      ${mensagem ? `<p class="${tipoAviso}" role="${status >= 400 ? 'alert' : 'status'}">${esc(mensagem)}</p>` : ''}
+      <a class="botao botao-microsoft" href="/auth/entrar">
+        <svg viewBox="0 0 21 21" width="20" height="20" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#F25022"/><rect x="11" y="1" width="9" height="9" fill="#7FBA00"/><rect x="1" y="11" width="9" height="9" fill="#00A4EF"/><rect x="11" y="11" width="9" height="9" fill="#FFB900"/></svg>
+        Iniciar sessão com Microsoft
+      </a>
+      <div class="entrada-ajuda">
+        <p>A palavra-passe é pedida pela Microsoft, nunca por esta aplicação.</p>
+        <p>Só entram utilizadores autorizados. Sem acesso? Fale com o administrador da app.</p>
+      </div>
+    </div>
+  </section>
 </main>
 </body></html>`;
   return new Response(html, { status, headers: cabecalhos });

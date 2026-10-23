@@ -7,7 +7,7 @@ Esta pasta tem:
 
 ## Como funciona e como fica protegido
 
-- **Entrada com Microsoft 365.** O Cloudflare Access pede a conta da empresa antes de a app abrir. O servidor volta a validar a sessão (assinatura, audiência, validade) e só aceita contas `@fercopor.pt`.
+- **Entrada com Microsoft 365.** A app mostra o seu ecrã «Iniciar sessão» e o login é feito na Microsoft (Entra ID). O servidor valida a sessão (assinatura, emissor, audiência, validade) e só aceita contas `@fercopor.pt`.
 - **Lista de autorizados.** Só entram as pessoas da lista (gerida na app, menu «Utilizadores») e as indicadas em `ADMIN_EMAILS`. Cada uma tem de corresponder a um utilizador **ativo** do HubSpot.
 - **Cada pessoa só vê e altera as suas reuniões.** O servidor verifica-o em cada pedido. Uma reunião de outra pessoa responde «não encontrada».
 - **HubSpot.** A chave fica guardada como segredo no Cloudflare e nunca chega ao browser.
@@ -102,13 +102,10 @@ A app faz o login Microsoft sozinha (OpenID Connect com PKCE). Pede **apenas** `
 
 **Deploy.** O login atual (Cloudflare Access) continua a funcionar enquanto existir. Ninguém perde o acesso.
 
-### 3. Migração sem interrupção
-1. Com o Access ainda ativo, abra `https://reunioes.fercopor.workers.dev/auth/entrar` e entre com a Microsoft. Confirme que a app abre com o seu nome. Peça o mesmo a um coordenador.
-2. Quando estiver tudo bem: Zero Trust → Access → Applications → **apagar ou desativar** a aplicação de `reunioes.fercopor.workers.dev` (ou desligar o Access em Domains & Routes).
-3. No Worker, crie `AUTH_MODE` = `entra` (Text) e faça Deploy. A partir daqui só a sessão Microsoft é aceite.
-4. Pode apagar `ACCESS_TEAM_DOMAIN` e `ACCESS_AUD`.
-
-Os utilizadores autorizados e a ligação ao HubSpot (e-mail → proprietário) não mudam.
+### 3. Só login Microsoft (feito a 2026-10-23)
+- O `wrangler.jsonc` define `AUTH_MODE` = `entra`: o servidor só aceita a sessão Microsoft. A página de entrada (`/`) mostra o ecrã «Iniciar sessão» da app com o botão «Iniciar sessão com Microsoft».
+- No Cloudflare, retire o Access do Worker: **Workers & Pages → reunioes → Access → Manage access → Remove Worker-specific Access**. Sem este passo, o Cloudflare continua a pedir o código por e-mail antes do ecrã da app.
+- `ACCESS_TEAM_DOMAIN` e `ACCESS_AUD` deixam de ser usados e podem ser apagados no painel.
 
 ### 4. Antes do corte: segredo de sessão próprio
 Crie `SESSION_SECRET` (tipo **Secret**, 40 ou mais caracteres, gerado num gestor de palavras-passe; não o cole em conversas nem documentos). Com ele, as sessões deixam de depender do client secret da Microsoft. Criar ou mudar este valor termina as sessões abertas: todos voltam a iniciar sessão uma vez.
@@ -116,7 +113,7 @@ Crie `SESSION_SECRET` (tipo **Secret**, 40 ou mais caracteres, gerado num gestor
 ### 5. Recuperação se o login Microsoft deixar de funcionar
 1. Abra `/auth/diagnostico` (com sessão) ou veja os **Logs** do Worker (`entra_troca_codigo_falhou`, com o código AADSTS).
 2. **Causa mais comum: o client secret expirou.** Entra ID → Certificates & secrets → New client secret → atualizar `MICROSOFT_CLIENT_SECRET` → Deploy.
-3. **Acesso de emergência:** no Worker, apague `AUTH_MODE` e volte a ligar a aplicação do Cloudflare Access (Zero Trust → Access → Applications). O código aceita de novo o Access de imediato. Repor `AUTH_MODE` = `entra` quando o login Microsoft estiver corrigido.
+3. **Acesso de emergência:** retire `AUTH_MODE` do `wrangler.jsonc` (publicação a partir do GitHub), volte a ligar o Access do Worker (Access → Manage access → All traffic) e confirme que `ACCESS_TEAM_DOMAIN` e `ACCESS_AUD` existem. O código aceita de novo o Access. Repor `AUTH_MODE` = `entra` quando o login Microsoft estiver corrigido.
 4. Anote a data de expiração do client secret e renove-o um mês antes.
 
 ## Calendário Outlook e Teams (Microsoft Graph, permissões delegadas)
